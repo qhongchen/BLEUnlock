@@ -8,6 +8,9 @@ const _testTimeout = Duration(milliseconds: 500);
 
 Future<void> main() async {
   await testWindowsNativeStartupUsesFlutterSpecificRunValue();
+  await testWindowsNativeRegistersDisplayPowerSessionEvents();
+  await testWindowsNativeReportsLockFailuresToDart();
+  await testWindowsNativeTrayUsesAppWindowIcon();
   await testWindowsNativeTrayMenuUsesMonitoringState();
   await testWindowsNativeFormatsAddressHintForDiagnostics();
   await testWindowsPlatformReportsFirstVersionCapabilities();
@@ -24,6 +27,54 @@ Future<void> main() async {
   await testWindowsTrayDelegatesStatusAndMapsActions();
   await testWindowsTrayForwardsMalformedNativeEventsAsPublicErrors();
   await testWindowsStartupDelegatesToBridge();
+}
+
+Future<void> testWindowsNativeRegistersDisplayPowerSessionEvents() async {
+  const sourcePath =
+      'flutter/packages/bleunlock_windows/windows/bleunlock_windows_plugin.cpp';
+  const headerPath =
+      'flutter/packages/bleunlock_windows/windows/bleunlock_windows_plugin.h';
+  final source = File(sourcePath).readAsStringSync();
+  final header = File(headerPath).readAsStringSync();
+
+  assert(header.contains('HPOWERNOTIFY display_power_notify_ = nullptr;'));
+  assert(source.contains('RegisterPowerSettingNotification'));
+  assert(source.contains('UnregisterPowerSettingNotification'));
+  assert(source.contains('WM_POWERBROADCAST'));
+  assert(source.contains('PBT_POWERSETTINGCHANGE'));
+  assert(source.contains('PBT_APMSUSPEND'));
+  assert(source.contains('PBT_APMRESUMEAUTOMATIC'));
+  assert(source.contains('EmitSessionEvent("displaySleep"'));
+  assert(source.contains('EmitSessionEvent("displayWake"'));
+}
+
+Future<void> testWindowsNativeReportsLockFailuresToDart() async {
+  const sourcePath =
+      'flutter/packages/bleunlock_windows/windows/bleunlock_windows_plugin.cpp';
+  const headerPath =
+      'flutter/packages/bleunlock_windows/windows/bleunlock_windows_plugin.h';
+  final source = File(sourcePath).readAsStringSync();
+  final header = File(headerPath).readAsStringSync();
+
+  assert(header.contains('bool Lock(DWORD *error_code);'));
+  assert(source.contains('if (!Lock(&error_code))'));
+  assert(source.contains('CompleteWithWin32Error(std::move(result),'));
+  assert(source.contains('"LockWorkStation"'));
+  assert(source.contains('error_code);'));
+  assert(source.contains('if (LockWorkStation())'));
+}
+
+Future<void> testWindowsNativeTrayUsesAppWindowIcon() async {
+  const sourcePath =
+      'flutter/packages/bleunlock_windows/windows/bleunlock_windows_plugin.cpp';
+  final source = File(sourcePath).readAsStringSync();
+
+  assert(source.contains('HICON LoadTrayIconFromWindow(HWND hwnd)'));
+  assert(source.contains('WM_GETICON'));
+  assert(source.contains('GetClassLongPtrW'));
+  assert(source.contains(
+    'tray_icon_data_.hIcon = LoadTrayIconFromWindow(registrar_window_);',
+  ));
 }
 
 Future<void> testWindowsNativeFormatsAddressHintForDiagnostics() async {

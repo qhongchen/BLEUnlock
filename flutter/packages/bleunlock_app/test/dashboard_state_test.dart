@@ -7,6 +7,7 @@ import '../lib/src/view_models/dashboard_state.dart';
 void main() {
   testInitialSnapshotUsesDesignDefaults();
   testSnapshotFormatsRssiAndSelectedCount();
+  testWindowsSnapshotWarnsWhenAutoUnlockCapabilityChanges();
   testDeviceViewFormatsLastSeenTime();
   testDevicesFromDecisionSortsByStrongestRssiFirst();
   testLogEntryFormatsStructuredDetails();
@@ -83,6 +84,34 @@ void testSnapshotFormatsRssiAndSelectedCount() {
   assert(snapshot.autoUnlockSecretLabel == 'configured');
   assert(snapshot.autoUnlockSecretEditable == true);
   assert(snapshot.autoUnlockPermissionSettingsAvailable == true);
+}
+
+void testWindowsSnapshotWarnsWhenAutoUnlockCapabilityChanges() {
+  const snapshot = DashboardSnapshot(
+    platformLabel: 'Windows',
+    monitoringStatus: 'Monitoring paused',
+    stateLabel: 'Idle',
+    bestRssi: null,
+    selectedDeviceCount: 0,
+    lastActionLabel: 'None',
+    bluetoothCapabilityLabel: 'supported',
+    autoLockCapabilityLabel: 'supported',
+    wakeCapabilityLabel: 'supported',
+    autoUnlockCapabilityLabel: 'supported',
+    trayCapabilityLabel: 'supported',
+    startupCapabilityLabel: 'supported',
+    startupEnabled: false,
+    autoUnlockSecretConfigured: false,
+    autoUnlockSecretEditable: false,
+    autoUnlockPermissionSettingsAvailable: false,
+  );
+
+  assert(snapshot.isWindowsPlatform == true);
+  assert(snapshot.isWindowsV1AutoUnlockUnsupported == false);
+  assert(snapshot.windowsV1ReadinessLabel ==
+      'Windows automatic unlock capability changed; review v1 scope');
+  assert(snapshot.toDiagnosticJson()['windowsV1ReadinessLabel'] ==
+      'Windows automatic unlock capability changed; review v1 scope');
 }
 
 void testDeviceViewFormatsLastSeenTime() {
@@ -703,8 +732,8 @@ void testAcceptanceChecklistExportsReadinessStatus() {
   );
   final json = summary.toDiagnosticJson();
 
-  assert(summary.requiredChecklistCount == 14);
-  assert(summary.completedRequiredChecklistCount == 0);
+  assert(summary.requiredChecklistCount == 15);
+  assert(summary.completedRequiredChecklistCount == 1);
   assert(summary.missingRequiredEvidenceCount == 14);
   assert(summary.readyForAcceptance == false);
   assert(json['missingRequiredEvidenceCount'] == 14);
@@ -1021,6 +1050,7 @@ void testAcceptanceChecklistTreatsWindowsAutoUnlockAsUnsupported() {
   final summary = AcceptanceSummary.fromState(
     state: const DashboardState(
       snapshot: DashboardSnapshot(
+        platformLabel: 'Windows',
         monitoringStatus: 'Monitoring paused',
         stateLabel: 'Idle',
         bestRssi: null,
@@ -1181,8 +1211,7 @@ void testAcceptanceChecklistTracksWindowsV1ScopeSeparately() {
   assert(windowsStep.status == 'ready');
   assert(summary.requiredChecklistCount == 15);
   assert(summary.completedRequiredChecklistCount == 1);
-  assert(!summary.missingRequiredChecklistLabels
-      .contains('Windows v1 scope'));
+  assert(!summary.missingRequiredChecklistLabels.contains('Windows v1 scope'));
 }
 
 void testStateExportsAcceptanceBundleJson() {

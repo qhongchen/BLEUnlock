@@ -6,6 +6,7 @@ import 'package:bleunlock_app/src/view_models/dashboard_state.dart';
 
 void main() {
   testExternalValidationGatesExportStructuredJson();
+  testExternalValidationGateSetCanExcludePlatformIrrelevantGates();
   testExternalValidationGateRecordsExportManualDetails();
   testExternalValidationGateSummaryCountsStatusesAndPendingLabels();
   testExternalValidationGateEvidenceJsonIncludesMetadata();
@@ -18,6 +19,27 @@ void main() {
   testValidationManifestExportsFileIndexAndGateStatuses();
   testValidationEvidenceExporterWritesCompleteBundle();
   testValidationEvidenceExporterWritesSingleJsonAndTextFiles();
+}
+
+void testExternalValidationGateSetCanExcludePlatformIrrelevantGates() {
+  final windowsV1Gates =
+      defaultExternalValidationGates.withoutGate('macAccessibilityUnlock');
+  final gates = windowsV1Gates.toDiagnosticJson();
+  final summary = windowsV1Gates.summaryJson(
+    statuses: const {
+      'windowsBuild': ExternalValidationGateStatus.passed,
+    },
+  );
+
+  assert(gates.length == 5);
+  assert(!gates.any((gate) => gate['id'] == 'macAccessibilityUnlock'));
+  assert(summary['totalCount'] == 5);
+  assert(summary['passedCount'] == 1);
+  assert(summary['manualRequiredCount'] == 4);
+  assert(
+    !(summary['pendingGateLabels'] as List<Object?>)
+        .contains('macOS Accessibility unlock'),
+  );
 }
 
 void testExternalValidationGatesExportStructuredJson() {

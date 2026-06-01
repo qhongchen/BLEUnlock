@@ -94,6 +94,13 @@ class ExternalValidationGateSet {
 
   final List<ExternalValidationGate> gates;
 
+  ExternalValidationGateSet withoutGate(String gateId) {
+    return ExternalValidationGateSet([
+      for (final gate in gates)
+        if (gate.id != gateId) gate,
+    ]);
+  }
+
   Map<String, ExternalValidationGateStatus> defaultStatuses() {
     return {
       for (final gate in gates) gate.id: gate.defaultStatus,

@@ -8,6 +8,7 @@
 #include <flutter/standard_method_codec.h>
 
 #include <chrono>
+#include <cstring>
 #include <iomanip>
 #include <memory>
 #include <mutex>
@@ -67,6 +68,8 @@ using BluetoothLEAdvertisementWatcherStatus = winrt::Windows::Devices::
 using BluetoothLEScanningMode =
     winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEScanningMode;
 using DataReader = winrt::Windows::Storage::Streams::DataReader;
+
+const GUID kDisplayPowerGuid = GUID_CONSOLE_DISPLAY_STATE;
 
 std::unique_ptr<EventSink> g_scan_event_sink;
 std::unique_ptr<EventSink> g_session_event_sink;
@@ -217,6 +220,32 @@ std::wstring TrayTipForStatus(const std::string &status,
     return title + L"\n" + Utf8ToWide(recent_device_summary);
 }
 
+HICON LoadTrayIconFromWindow(HWND hwnd) {
+    if (hwnd == nullptr) {
+        return LoadIconW(nullptr, IDI_APPLICATION);
+    }
+
+    const auto large_icon =
+        reinterpret_cast<HICON>(SendMessageW(hwnd, WM_GETICON, ICON_BIG, 0));
+    if (large_icon != nullptr) {
+        return large_icon;
+    }
+
+    const auto small_icon =
+        reinterpret_cast<HICON>(SendMessageW(hwnd, WM_GETICON, ICON_SMALL, 0));
+    if (small_icon != nullptr) {
+        return small_icon;
+    }
+
+    const auto class_icon =
+        reinterpret_cast<HICON>(GetClassLongPtrW(hwnd, GCLP_HICON));
+    if (class_icon != nullptr) {
+        return class_icon;
+    }
+
+    return LoadIconW(nullptr, IDI_APPLICATION);
+}
+
 const flutter::EncodableMap *ArgumentsMap(
     const flutter::EncodableValue *arguments) {
     if (arguments == nullptr) {
@@ -319,6 +348,10 @@ BleunlockWindowsPlugin::BleunlockWindowsPlugin()
 
 BleunlockWindowsPlugin::~BleunlockWindowsPlugin() {
     StopScan();
+    if (display_power_notify_ != nullptr) {
+        UnregisterPowerSettingNotification(display_power_notify_);
+        display_power_notify_ = nullptr;
+    }
     if (tray_icon_created_) {
         Shell_NotifyIconW(NIM_DELETE, &tray_icon_data_);
     }
@@ -378,6 +411,9 @@ void BleunlockWindowsPlugin::RegisterWithRegistrar(
         SetWindowLongPtr(plugin->registrar_window_, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(PluginWindowProc));
         WTSRegisterSessionNotification(plugin->registrar_window_,
                                        NOTIFY_FOR_THIS_SESSION);
+        plugin->display_power_notify_ = RegisterPowerSettingNotification(
+            plugin->registrar_window_, &kDisplayPowerGuid,
+            DEVICE_NOTIFY_WINDOW_HANDLE);
     }
 
     scanner_method_channel->SetMethodCallHandler(
@@ -475,6 +511,36 @@ LRESULT BleunlockWindowsPlugin::HandleWindowMessage(HWND hwnd,
         return 0;
     }
 
+    if (message == WM_POWERBROADCAST) {
+        if (wparam == PBT_POWERSETTINGCHANGE) {
+            const auto *setting =
+                reinterpret_cast<const POWERBROADCAST_SETTING *>(lparam);
+            if (setting != nullptr &&
+                IsEqualGUID(setting->PowerSetting, kDisplayPowerGuid) &&
+                setting->DataLength >= sizeof(DWORD)) {
+                DWORD display_state = 0;
+                memcpy(&display_state, setting->Data, sizeof(DWORD));
+                if (display_state == 0) {
+                    EmitSessionEvent("displaySleep", "WM_POWERBROADCAST");
+                } else {
+                    EmitSessionEvent("displayWake", "WM_POWERBROADCAST");
+                }
+                return TRUE;
+            }
+        }
+
+        if (wparam == PBT_APMSUSPEND) {
+            EmitSessionEvent("displaySleep", "WM_POWERBROADCAST");
+            return TRUE;
+        }
+
+        if (wparam == PBT_APMRESUMEAUTOMATIC ||
+            wparam == PBT_APMRESUMESUSPEND) {
+            EmitSessionEvent("displayWake", "WM_POWERBROADCAST");
+            return TRUE;
+        }
+    }
+
     if (message == WM_WTSSESSION_CHANGE) {
         const auto kind = SessionKindFromWtsStatus(wparam);
         if (!kind.empty()) {
@@ -527,7 +593,12 @@ void BleunlockWindowsPlugin::HandleMethodCall(
     }
 
     if (method_call.method_name() == "lock") {
-        Lock();
+        DWORD error_code = ERROR_SUCCESS;
+        if (!Lock(&error_code)) {
+            CompleteWithWin32Error(std::move(result), "LockWorkStation",
+                                   error_code);
+            return;
+        }
         result->Success();
         return;
     }
@@ -730,9 +801,15 @@ void BleunlockWindowsPlugin::FlushScanEvents() {
     }
 }
 
-void BleunlockWindowsPlugin::Lock() {
-    LockWorkStation();
-    session_locked_ = true;
+bool BleunlockWindowsPlugin::Lock(DWORD *error_code) {
+    if (LockWorkStation()) {
+        session_locked_ = true;
+        *error_code = ERROR_SUCCESS;
+        return true;
+    }
+
+    *error_code = GetLastError();
+    return false;
 }
 
 void BleunlockWindowsPlugin::WakeDisplay() {
@@ -956,7 +1033,7 @@ void BleunlockWindowsPlugin::EnsureTrayIcon() {
     tray_icon_data_.uID = kTrayIconId;
     tray_icon_data_.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     tray_icon_data_.uCallbackMessage = kTrayCallbackMessage;
-    tray_icon_data_.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    tray_icon_data_.hIcon = LoadTrayIconFromWindow(registrar_window_);
     const auto title = TrayTipForStatus(tray_status_, tray_recent_device_summary_);
     wcsncpy_s(tray_icon_data_.szTip, title.c_str(), _TRUNCATE);
 

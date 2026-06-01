@@ -49,6 +49,7 @@ class _ValidationSectionState extends State<ValidationSection> {
     final missingActionList = summary.missingActionList;
     final activeExportDirectory =
         widget.exportDirectory ?? _defaultExportDirectory;
+    final activeGateSet = _activeExternalValidationGates;
     final latestGateIndexEntries = latestExternalValidationGateIndexEntries(
       directory: activeExportDirectory,
       validationSessionId: widget.validationSessionId,
@@ -191,6 +192,7 @@ class _ValidationSectionState extends State<ValidationSection> {
             summary: summary,
             externalGateStatuses: _externalGateStatuses,
             externalGateRecords: _externalGateRecords,
+            externalGateSet: activeGateSet,
             onExternalGateStatusChanged: _setExternalGateStatus,
             onExternalGateRecordChanged: _setExternalGateRecordField,
             onExternalGateCopied: (gate, status, record) {
@@ -269,6 +271,7 @@ class _ValidationSectionState extends State<ValidationSection> {
         environment: _currentAcceptanceBundleEnvironment,
         externalGateStatuses: _externalGateStatuses,
         externalGateRecords: _externalGateRecords,
+        gateSet: _activeExternalValidationGates,
       ),
       manifestJson: (files) => buildValidationManifestJson(
         validationSessionId: widget.validationSessionId,
@@ -280,6 +283,7 @@ class _ValidationSectionState extends State<ValidationSection> {
         environment: _currentAcceptanceBundleEnvironment,
         externalGateStatuses: _externalGateStatuses,
         externalGateRecords: _externalGateRecords,
+        gateSet: _activeExternalValidationGates,
         files: files,
       ),
     );
@@ -350,6 +354,7 @@ class _ValidationSectionState extends State<ValidationSection> {
         environment: _currentAcceptanceBundleEnvironment,
         externalGateStatuses: _externalGateStatuses,
         externalGateRecords: _externalGateRecords,
+        gateSet: _activeExternalValidationGates,
       ),
     );
     if (!context.mounted) {
@@ -462,7 +467,7 @@ class _ValidationSectionState extends State<ValidationSection> {
   }
 
   List<Map<String, Object?>> _validationGateJson() {
-    return defaultExternalValidationGates.toDiagnosticJson(
+    return _activeExternalValidationGates.toDiagnosticJson(
       statuses: _externalGateStatuses,
       records: _externalGateRecords,
     );
@@ -485,6 +490,15 @@ class _ValidationSectionState extends State<ValidationSection> {
     ExternalValidationGateRecord record,
   ) {
     return jsonEncode(_externalGateMap(gate, status, record));
+  }
+
+  ExternalValidationGateSet get _activeExternalValidationGates {
+    if (widget.state.snapshot.isWindowsV1AutoUnlockUnsupported) {
+      return defaultExternalValidationGates.withoutGate(
+        'macAccessibilityUnlock',
+      );
+    }
+    return defaultExternalValidationGates;
   }
 
   String _externalGateIndexJson(
@@ -562,6 +576,7 @@ class _AcceptanceReadinessSummary extends StatelessWidget {
     required this.summary,
     required this.externalGateStatuses,
     required this.externalGateRecords,
+    required this.externalGateSet,
     required this.onExternalGateStatusChanged,
     required this.onExternalGateRecordChanged,
     required this.onExternalGateCopied,
@@ -571,6 +586,7 @@ class _AcceptanceReadinessSummary extends StatelessWidget {
   final AcceptanceSummary summary;
   final Map<String, ExternalValidationGateStatus> externalGateStatuses;
   final Map<String, ExternalValidationGateRecord> externalGateRecords;
+  final ExternalValidationGateSet externalGateSet;
   final void Function(String gateId, String status) onExternalGateStatusChanged;
   final void Function(
     String gateId,
@@ -591,7 +607,7 @@ class _AcceptanceReadinessSummary extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final textTheme = Theme.of(context).textTheme;
-    final externalGateSummary = defaultExternalValidationGates.summaryJson(
+    final externalGateSummary = externalGateSet.summaryJson(
       statuses: externalGateStatuses,
       records: externalGateRecords,
     );
@@ -702,7 +718,7 @@ class _AcceptanceReadinessSummary extends StatelessWidget {
           spacing: 8,
           runSpacing: 8,
           children: [
-            for (final gate in defaultExternalValidationGates.gates)
+            for (final gate in externalGateSet.gates)
               _ExternalGateControl(
                 gate: gate,
                 status: externalGateStatuses[gate.id] ?? gate.defaultStatus,

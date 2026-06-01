@@ -634,6 +634,7 @@ void main() {
     );
 
     expect(find.text('Windows v1 明确不支持自动解锁'), findsOneWidget);
+    expect(find.text('Windows'), findsWidgets);
   });
 
   testWidgets('validation section shows Windows v1 readiness pill', (
@@ -1231,6 +1232,54 @@ void main() {
     expect(find.text('必需证据已捕获 0/14'), findsOneWidget);
     expect(find.text('macOS 自动解锁动作'), findsOneWidget);
     expect(find.text('0 条证据'), findsWidgets);
+  });
+
+  testWidgets('Windows v1 acceptance excludes macOS unlock gate',
+      (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ListView(
+            children: [
+              ValidationSection(
+                state: DashboardState(
+                  snapshot: const DashboardSnapshot(
+                    platformLabel: 'Windows',
+                    monitoringStatus: 'Monitoring paused',
+                    stateLabel: 'Idle',
+                    bestRssi: null,
+                    selectedDeviceCount: 0,
+                    lastActionLabel: 'None',
+                    bluetoothCapabilityLabel: 'supported',
+                    autoLockCapabilityLabel: 'supported',
+                    wakeCapabilityLabel: 'supported',
+                    autoUnlockCapabilityLabel: 'unsupported',
+                    trayCapabilityLabel: 'supported',
+                    startupCapabilityLabel: 'supported',
+                    startupEnabled: false,
+                    autoUnlockSecretConfigured: false,
+                    autoUnlockSecretEditable: false,
+                    autoUnlockPermissionSettingsAvailable: false,
+                  ),
+                  devices: const [],
+                  logs: [],
+                  config: const ProximityConfig(),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Windows v1 明确不支持自动解锁'), findsOneWidget);
+    expect(find.text('自动解锁 不支持'), findsOneWidget);
+    expect(find.text('必需证据已捕获 1/15'), findsOneWidget);
+    expect(find.text('外部门禁待处理 6'), findsNothing);
+    expect(find.text('外部门禁待处理 5'), findsOneWidget);
+    expect(find.text('macOS 辅助功能解锁'), findsNothing);
+    expect(find.text('Windows v1 范围'), findsWidgets);
+    expect(find.text('已捕获 1/1'), findsWidgets);
   });
 
   testWidgets('acceptance readiness shows tray menu action checklist',

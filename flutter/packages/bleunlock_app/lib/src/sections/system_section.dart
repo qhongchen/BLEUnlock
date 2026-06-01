@@ -41,6 +41,10 @@ class SystemSection extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           CapabilityRow(
+            label: '平台',
+            value: snapshot.platformLabel,
+          ),
+          CapabilityRow(
             label: '蓝牙扫描',
             value: snapshot.bluetoothCapabilityLabel,
           ),

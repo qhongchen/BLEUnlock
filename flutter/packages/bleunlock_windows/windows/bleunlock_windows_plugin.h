@@ -47,7 +47,7 @@ class BleunlockWindowsPlugin : public flutter::Plugin {
 
     void FlushScanEvents();
 
-    void Lock();
+    bool Lock(DWORD *error_code);
 
     void WakeDisplay();
 
@@ -91,6 +91,7 @@ class BleunlockWindowsPlugin : public flutter::Plugin {
     std::vector<flutter::EncodableValue> pending_scan_events_;
     WNDPROC original_window_proc_ = nullptr;
     HWND registrar_window_ = nullptr;
+    HPOWERNOTIFY display_power_notify_ = nullptr;
     NOTIFYICONDATAW tray_icon_data_ = {};
     std::string tray_status_ = "normal";
     std::string tray_recent_device_summary_;
