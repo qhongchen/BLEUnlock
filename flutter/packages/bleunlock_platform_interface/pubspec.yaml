@@ -1,0 +1,7 @@
+name: bleunlock_platform_interface
+description: Platform plugin contracts for BLEUnlock.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ">=3.6.0 <4.0.0"

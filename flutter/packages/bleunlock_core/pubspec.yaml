@@ -1,0 +1,7 @@
+name: bleunlock_core
+description: Pure Dart proximity logic for BLEUnlock.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ">=3.6.0 <4.0.0"
