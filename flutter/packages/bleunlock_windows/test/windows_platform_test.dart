@@ -12,12 +12,15 @@ Future<void> main() async {
   await testWindowsNativeReportsLockFailuresToDart();
   await testWindowsNativeTrayUsesAppWindowIcon();
   await testWindowsNativeTrayMenuUsesMonitoringState();
+  await testWindowsNativeCachesAndResolvesDeviceNames();
+  await testWindowsNativeUsesActiveBleScanningForNames();
   await testWindowsNativeFormatsAddressHintForDiagnostics();
   await testWindowsPlatformReportsFirstVersionCapabilities();
   await testWindowsUnlockIsUnsupported();
   await testWindowsScannerRefreshesCapabilityFromBridge();
   await testWindowsScannerStartsAndStopsWithoutNativeBridge();
   await testWindowsScannerMapsNativeAdvertisementEvents();
+  await testWindowsScannerNormalizesBlankNativeAdvertisementNames();
   await testWindowsScannerForwardsMalformedNativeEventsAsPublicErrors();
   await testWindowsScannerForwardsNativeStreamErrorsAsPublicErrors();
   await testWindowsSessionDelegatesLockAndWakeToBridge();
@@ -75,6 +78,33 @@ Future<void> testWindowsNativeTrayUsesAppWindowIcon() async {
   assert(source.contains(
     'tray_icon_data_.hIcon = LoadTrayIconFromWindow(registrar_window_);',
   ));
+}
+
+Future<void> testWindowsNativeCachesAndResolvesDeviceNames() async {
+  const sourcePath =
+      'flutter/packages/bleunlock_windows/windows/bleunlock_windows_plugin.cpp';
+  final source = File(sourcePath).readAsStringSync();
+
+  assert(source.contains('g_device_name_cache'));
+  assert(source.contains('BluetoothLEDevice::FromBluetoothAddressAsync'));
+  assert(source.contains('DisplayNameForAdvertisement'));
+  assert(source.contains('ScheduleDeviceNameResolution(bluetooth_address);'));
+  assert(source.contains('CacheDeviceName(bluetooth_address, display_name);'));
+  assert(source.contains('CachedDeviceName(bluetooth_address)'));
+  assert(source.contains('ShouldResolveDeviceName(bluetooth_address,'));
+  assert(source.contains('if (HasText(display_name))'));
+  assert(source.contains(
+    'event[flutter::EncodableValue("displayName")] =',
+  ));
+}
+
+Future<void> testWindowsNativeUsesActiveBleScanningForNames() async {
+  const sourcePath =
+      'flutter/packages/bleunlock_windows/windows/bleunlock_windows_plugin.cpp';
+  final source = File(sourcePath).readAsStringSync();
+
+  assert(source.contains('BluetoothLEScanningMode::Active'));
+  assert(!source.contains('ScanningMode(BluetoothLEScanningMode::Passive);'));
 }
 
 Future<void> testWindowsNativeFormatsAddressHintForDiagnostics() async {
@@ -206,6 +236,30 @@ Future<void> testWindowsScannerMapsNativeAdvertisementEvents() async {
 
   await scanner.stopScan();
   assert(bridge.stopped);
+}
+
+Future<void> testWindowsScannerNormalizesBlankNativeAdvertisementNames() async {
+  final bridge = FakeWindowsBleScanBridge(
+    events: Stream<Object?>.fromIterable([
+      {
+        'deviceId': 'bluetooth-address-or-runtime-id',
+        'displayName': '   ',
+        'addressHint': '',
+        'rssi': -51,
+        'seenAtMillis': 1779943200000,
+      },
+    ]),
+  );
+  final scanner = WindowsBleScanner(scanBridge: bridge);
+
+  final eventFuture = scanner.events.first.timeout(_testTimeout);
+  await scanner.startScan();
+  final event = await eventFuture;
+
+  assert(event.displayName == null);
+  assert(event.addressHint == null);
+
+  await scanner.stopScan();
 }
 
 Future<void>

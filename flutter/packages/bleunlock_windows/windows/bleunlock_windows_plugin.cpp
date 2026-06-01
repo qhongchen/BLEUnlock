@@ -15,10 +15,13 @@
 #include <shellapi.h>
 #include <sstream>
 #include <string>
+#include <thread>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 #include <wincred.h>
 #include <windows.h>
+#include <winrt/Windows.Devices.Bluetooth.h>
 #include <winrt/Windows.Devices.Bluetooth.Advertisement.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Storage.Streams.h>
@@ -55,8 +58,10 @@ constexpr UINT kTrayCommandStartMonitoring = 1002;
 constexpr UINT kTrayCommandPauseMonitoring = 1003;
 constexpr UINT kTrayCommandLockNow = 1004;
 constexpr UINT kTrayCommandQuit = 1005;
+constexpr int64_t kDeviceNameLookupRetryMillis = 30000;
 
 using EventSink = flutter::EventSink<flutter::EncodableValue>;
+using BluetoothLEDevice = winrt::Windows::Devices::Bluetooth::BluetoothLEDevice;
 using BluetoothLEAdvertisement = winrt::Windows::Devices::Bluetooth::
     Advertisement::BluetoothLEAdvertisement;
 using BluetoothLEAdvertisementReceivedEventArgs = winrt::Windows::Devices::
@@ -75,6 +80,9 @@ std::unique_ptr<EventSink> g_scan_event_sink;
 std::unique_ptr<EventSink> g_session_event_sink;
 std::unique_ptr<EventSink> g_tray_event_sink;
 BleunlockWindowsPlugin *g_plugin_instance = nullptr;
+std::mutex g_device_name_cache_mutex;
+std::unordered_map<uint64_t, std::string> g_device_name_cache;
+std::unordered_map<uint64_t, int64_t> g_device_name_lookup_at;
 
 int64_t CurrentTimeMillis() {
     const auto now = std::chrono::system_clock::now().time_since_epoch();
@@ -138,6 +146,104 @@ std::string FormatBluetoothAddressHint(uint64_t bluetooth_address) {
     return stream.str();
 }
 
+bool HasText(const std::string &value) {
+    return value.find_first_not_of(" \t\r\n") != std::string::npos;
+}
+
+void EnsureWinrtApartment() {
+    static thread_local bool attempted = false;
+    if (attempted) {
+        return;
+    }
+
+    attempted = true;
+    try {
+        winrt::init_apartment(winrt::apartment_type::multi_threaded);
+    } catch (...) {
+        // Flutter may already initialize COM for the current thread.
+    }
+}
+
+void CacheDeviceName(uint64_t bluetooth_address, const std::string &name) {
+    if (!HasText(name)) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(g_device_name_cache_mutex);
+    g_device_name_cache[bluetooth_address] = name;
+}
+
+std::string CachedDeviceName(uint64_t bluetooth_address) {
+    std::lock_guard<std::mutex> lock(g_device_name_cache_mutex);
+    const auto iterator = g_device_name_cache.find(bluetooth_address);
+    return iterator == g_device_name_cache.end() ? "" : iterator->second;
+}
+
+bool ShouldResolveDeviceName(uint64_t bluetooth_address, int64_t now_millis) {
+    std::lock_guard<std::mutex> lock(g_device_name_cache_mutex);
+    if (g_device_name_cache.find(bluetooth_address) !=
+        g_device_name_cache.end()) {
+        return false;
+    }
+
+    const auto iterator = g_device_name_lookup_at.find(bluetooth_address);
+    if (iterator != g_device_name_lookup_at.end() &&
+        now_millis - iterator->second < kDeviceNameLookupRetryMillis) {
+        return false;
+    }
+
+    g_device_name_lookup_at[bluetooth_address] = now_millis;
+    return true;
+}
+
+std::string ResolveDeviceNameFromBluetoothAddress(uint64_t bluetooth_address) {
+    try {
+        EnsureWinrtApartment();
+        const auto device =
+            BluetoothLEDevice::FromBluetoothAddressAsync(bluetooth_address)
+                .get();
+        if (!device) {
+            return "";
+        }
+        return winrt::to_string(device.Name());
+    } catch (...) {
+        return "";
+    }
+}
+
+void ScheduleDeviceNameResolution(uint64_t bluetooth_address) {
+    std::thread([bluetooth_address]() {
+        const auto display_name =
+            ResolveDeviceNameFromBluetoothAddress(bluetooth_address);
+        if (HasText(display_name)) {
+            CacheDeviceName(bluetooth_address, display_name);
+        }
+    }).detach();
+}
+
+std::string DisplayNameForAdvertisement(
+    uint64_t bluetooth_address,
+    const BluetoothLEAdvertisement &advertisement,
+    int64_t now_millis) {
+    auto display_name = winrt::to_string(advertisement.LocalName());
+    if (HasText(display_name)) {
+        CacheDeviceName(bluetooth_address, display_name);
+        return display_name;
+    }
+
+    display_name = CachedDeviceName(bluetooth_address);
+    if (HasText(display_name)) {
+        return display_name;
+    }
+
+    if (!ShouldResolveDeviceName(bluetooth_address, now_millis)) {
+        return "";
+    }
+
+    ScheduleDeviceNameResolution(bluetooth_address);
+    return "";
+}
+
 flutter::EncodableList ManufacturerDataBytes(
     const BluetoothLEAdvertisement &advertisement) {
     flutter::EncodableList result;
@@ -163,39 +269,31 @@ flutter::EncodableList ManufacturerDataBytes(
 
 flutter::EncodableMap ScanEventFromAdvertisement(
     const BluetoothLEAdvertisementReceivedEventArgs &args) {
-    const auto address = FormatBluetoothAddress(args.BluetoothAddress());
-    const auto address_hint = FormatBluetoothAddressHint(args.BluetoothAddress());
+    const auto bluetooth_address = args.BluetoothAddress();
+    const auto now_millis = CurrentTimeMillis();
+    const auto address = FormatBluetoothAddress(bluetooth_address);
+    const auto address_hint = FormatBluetoothAddressHint(bluetooth_address);
     const auto advertisement = args.Advertisement();
-    const auto local_name = winrt::to_string(advertisement.LocalName());
+    const auto display_name =
+        DisplayNameForAdvertisement(bluetooth_address, advertisement,
+                                    now_millis);
 
     flutter::EncodableMap event;
     event[flutter::EncodableValue("deviceId")] = flutter::EncodableValue(address);
-    event[flutter::EncodableValue("displayName")] =
-        flutter::EncodableValue(local_name);
+    if (HasText(display_name)) {
+        event[flutter::EncodableValue("displayName")] =
+            flutter::EncodableValue(display_name);
+    }
     event[flutter::EncodableValue("addressHint")] =
         flutter::EncodableValue(address_hint);
     event[flutter::EncodableValue("rssi")] =
         flutter::EncodableValue(static_cast<int32_t>(
             args.RawSignalStrengthInDBm()));
     event[flutter::EncodableValue("seenAtMillis")] =
-        flutter::EncodableValue(CurrentTimeMillis());
+        flutter::EncodableValue(now_millis);
     event[flutter::EncodableValue("manufacturerData")] =
         flutter::EncodableValue(ManufacturerDataBytes(advertisement));
     return event;
-}
-
-void EnsureWinrtApartment() {
-    static thread_local bool attempted = false;
-    if (attempted) {
-        return;
-    }
-
-    attempted = true;
-    try {
-        winrt::init_apartment(winrt::apartment_type::multi_threaded);
-    } catch (...) {
-        // Flutter may already initialize COM for the current thread.
-    }
 }
 
 std::wstring TrayTitleForStatus(const std::string &status) {
@@ -732,7 +830,7 @@ void BleunlockWindowsPlugin::StartScan() {
 
     if (!ble_watcher_->watcher) {
         ble_watcher_->watcher = BluetoothLEAdvertisementWatcher();
-        ble_watcher_->watcher.ScanningMode(BluetoothLEScanningMode::Passive);
+        ble_watcher_->watcher.ScanningMode(BluetoothLEScanningMode::Active);
         ble_watcher_->received_token = ble_watcher_->watcher.Received(
             [this](const BluetoothLEAdvertisementWatcher &,
                    const BluetoothLEAdvertisementReceivedEventArgs &args) {
@@ -763,7 +861,7 @@ flutter::EncodableValue BleunlockWindowsPlugin::GetScannerCapability() {
     try {
         EnsureWinrtApartment();
         BluetoothLEAdvertisementWatcher probe;
-        probe.ScanningMode(BluetoothLEScanningMode::Passive);
+        probe.ScanningMode(BluetoothLEScanningMode::Active);
         return CapabilityMap("supported");
     } catch (const winrt::hresult_error &error) {
         return CapabilityMap(

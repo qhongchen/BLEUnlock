@@ -119,8 +119,8 @@ class WindowsBleScanner implements BleScanner {
     final manufacturerData = value['manufacturerData'];
     return BleScanEvent(
       deviceId: deviceId,
-      displayName: value['displayName'] as String?,
-      addressHint: value['addressHint'] as String?,
+      displayName: _normalizedNativeText(value['displayName']),
+      addressHint: _normalizedNativeText(value['addressHint']),
       rssi: rssi,
       seenAt: DateTime.fromMillisecondsSinceEpoch(seenAtMillis),
       manufacturerData: manufacturerData is List
@@ -128,6 +128,15 @@ class WindowsBleScanner implements BleScanner {
           : null,
     );
   }
+}
+
+String? _normalizedNativeText(Object? value) {
+  if (value is! String) {
+    return null;
+  }
+
+  final trimmed = value.trim();
+  return trimmed.isEmpty ? null : trimmed;
 }
 
 CapabilityStatus _mapNativeCapability(Object? value) {
