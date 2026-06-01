@@ -1,0 +1,26 @@
+name: bleunlock_app
+description: Cross-platform BLEUnlock desktop app shell.
+publish_to: "none"
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.6.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  bleunlock_core:
+    path: ../bleunlock_core
+  bleunlock_platform_interface:
+    path: ../bleunlock_platform_interface
+  bleunlock_macos:
+    path: ../bleunlock_macos
+  bleunlock_windows:
+    path: ../bleunlock_windows
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true

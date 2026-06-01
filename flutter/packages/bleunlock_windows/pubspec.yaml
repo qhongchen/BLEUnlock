@@ -1,0 +1,19 @@
+name: bleunlock_windows
+description: Windows platform implementation skeleton for BLEUnlock.
+publish_to: "none"
+version: 0.1.0
+
+environment:
+  sdk: ">=3.6.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  bleunlock_platform_interface:
+    path: ../bleunlock_platform_interface
+
+flutter:
+  plugin:
+    platforms:
+      windows:
+        pluginClass: BleunlockWindowsPluginCApi
