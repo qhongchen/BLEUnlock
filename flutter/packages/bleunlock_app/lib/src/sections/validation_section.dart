@@ -648,6 +648,13 @@ class _AcceptanceReadinessSummary extends StatelessWidget {
                   ? Icons.verified_outlined
                   : Icons.pending_actions_outlined,
             ),
+            if (summary.windowsV1ReadinessLabel != null)
+              StatusPill(
+                label: zhDisplayText(summary.windowsV1ReadinessLabel!),
+                icon: summary.isWindowsV1AutoUnlockUnsupported
+                    ? Icons.block
+                    : Icons.warning_amber_outlined,
+              ),
           ],
         ),
         if (summary.missingRequiredChecklistLabels.isNotEmpty) ...[

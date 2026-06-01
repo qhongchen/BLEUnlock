@@ -28,6 +28,7 @@ void main() {
   testAcceptanceChecklistTreatsWindowsAutoUnlockAsUnsupported();
   testAcceptanceChecklistTracksTrayMenuActionsSeparately();
   testAcceptanceChecklistTracksStartupEnableDisableSeparately();
+  testAcceptanceChecklistTracksWindowsV1ScopeSeparately();
   testStateExportsAcceptanceBundleJson();
   testStateExportsRunbookBundleJson();
   testDeviceViewFormatsPlatformIdShortCode();
@@ -36,6 +37,7 @@ void main() {
 void testInitialSnapshotUsesDesignDefaults() {
   const snapshot = DashboardSnapshot.initial();
 
+  assert(snapshot.platformLabel == 'unknown');
   assert(snapshot.monitoringStatus == 'Monitoring paused');
   assert(snapshot.stateLabel == 'Idle');
   assert(snapshot.bestRssiLabel == '-- dBm');
@@ -53,6 +55,7 @@ void testInitialSnapshotUsesDesignDefaults() {
   assert(snapshot.autoUnlockSecretEditable == false);
   assert(snapshot.autoUnlockPermissionSettingsAvailable == false);
   assert(snapshot.autoUnlockSecretLabel == 'missing');
+  assert(snapshot.windowsV1ReadinessLabel == null);
 }
 
 void testSnapshotFormatsRssiAndSelectedCount() {
@@ -675,6 +678,7 @@ void testAcceptanceChecklistExportsReadinessStatus() {
   final summary = AcceptanceSummary.fromState(
     state: const DashboardState(
       snapshot: DashboardSnapshot(
+        platformLabel: 'Windows',
         monitoringStatus: 'Monitoring paused',
         stateLabel: 'Idle',
         bestRssi: null,
@@ -1046,8 +1050,9 @@ void testAcceptanceChecklistTreatsWindowsAutoUnlockAsUnsupported() {
 
   assert(macAutoUnlock.status == 'unsupported');
   assert(macAutoUnlock.required == false);
-  assert(summary.requiredChecklistCount == 14);
-  assert(summary.completedRequiredChecklistCount == 0);
+  assert(summary.requiredChecklistCount == 15);
+  assert(summary.completedRequiredChecklistCount == 1);
+  assert(summary.checklistStatus('windowsV1Scope') == 'observed');
   assert(!summary.missingRequiredChecklistLabels
       .contains('macOS auto unlock action'));
 }
@@ -1131,6 +1136,53 @@ void testAcceptanceChecklistTracksStartupEnableDisableSeparately() {
 
   assert(checklist['startupEnableAction'] == 'observed');
   assert(checklist['startupDisableAction'] == 'observed');
+}
+
+void testAcceptanceChecklistTracksWindowsV1ScopeSeparately() {
+  final summary = AcceptanceSummary.fromState(
+    state: const DashboardState(
+      snapshot: DashboardSnapshot(
+        platformLabel: 'Windows',
+        monitoringStatus: 'Monitoring paused',
+        stateLabel: 'Idle',
+        bestRssi: null,
+        selectedDeviceCount: 0,
+        lastActionLabel: 'None',
+        bluetoothCapabilityLabel: 'supported',
+        autoLockCapabilityLabel: 'supported',
+        wakeCapabilityLabel: 'supported',
+        autoUnlockCapabilityLabel: 'unsupported',
+        trayCapabilityLabel: 'supported',
+        startupCapabilityLabel: 'supported',
+        startupEnabled: false,
+        autoUnlockSecretConfigured: false,
+        autoUnlockSecretEditable: false,
+        autoUnlockPermissionSettingsAvailable: false,
+      ),
+      devices: [],
+      logs: [],
+      config: ProximityConfig(enableMacAutoUnlock: false),
+    ),
+    visibleLogs: const [],
+  );
+
+  final checklist = summary.checklistMap;
+  final windowsScope = summary.checklistItems.firstWhere(
+    (item) => item.id == 'windowsV1Scope',
+  );
+  final windowsStep = summary.validationSteps.firstWhere(
+    (step) => step.id == 'windowsV1Scope',
+  );
+
+  assert(summary.windowsV1ReadinessLabel ==
+      'Windows v1 automatic unlock intentionally unsupported');
+  assert(checklist['windowsV1Scope'] == 'observed');
+  assert(windowsScope.required == true);
+  assert(windowsStep.status == 'ready');
+  assert(summary.requiredChecklistCount == 15);
+  assert(summary.completedRequiredChecklistCount == 1);
+  assert(!summary.missingRequiredChecklistLabels
+      .contains('Windows v1 scope'));
 }
 
 void testStateExportsAcceptanceBundleJson() {

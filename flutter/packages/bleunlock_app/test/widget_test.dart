@@ -597,6 +597,85 @@ void main() {
     await _disposeCoordinator(tester, coordinator);
   });
 
+  testWidgets('system section shows Windows v1 readiness boundary', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SystemSection(
+            snapshot: const DashboardSnapshot(
+              platformLabel: 'Windows',
+              monitoringStatus: 'Monitoring paused',
+              stateLabel: 'Idle',
+              bestRssi: null,
+              selectedDeviceCount: 0,
+              lastActionLabel: 'None',
+              bluetoothCapabilityLabel: 'supported',
+              autoLockCapabilityLabel: 'supported',
+              wakeCapabilityLabel: 'supported',
+              autoUnlockCapabilityLabel: 'unsupported',
+              trayCapabilityLabel: 'supported',
+              startupCapabilityLabel: 'supported',
+              startupEnabled: false,
+              autoUnlockSecretConfigured: false,
+              autoUnlockSecretEditable: false,
+              autoUnlockPermissionSettingsAvailable: false,
+            ),
+            showMacAutoUnlockPassword: false,
+            onCapabilitiesRefreshed: () async {},
+            onStartupChanged: (_) {},
+            onMacAutoUnlockPasswordSaved: (_) async {},
+            onMacAutoUnlockPasswordCleared: () async {},
+            onMacAutoUnlockPermissionSettingsOpened: () async {},
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Windows v1 明确不支持自动解锁'), findsOneWidget);
+  });
+
+  testWidgets('validation section shows Windows v1 readiness pill', (
+    tester,
+  ) async {
+    final state = DashboardState(
+      snapshot: const DashboardSnapshot(
+        platformLabel: 'Windows',
+        monitoringStatus: 'Monitoring paused',
+        stateLabel: 'Idle',
+        bestRssi: null,
+        selectedDeviceCount: 0,
+        lastActionLabel: 'None',
+        bluetoothCapabilityLabel: 'supported',
+        autoLockCapabilityLabel: 'supported',
+        wakeCapabilityLabel: 'supported',
+        autoUnlockCapabilityLabel: 'unsupported',
+        trayCapabilityLabel: 'supported',
+        startupCapabilityLabel: 'supported',
+        startupEnabled: false,
+        autoUnlockSecretConfigured: false,
+        autoUnlockSecretEditable: false,
+        autoUnlockPermissionSettingsAvailable: false,
+      ),
+      devices: const [],
+      logs: const [],
+      config: const ProximityConfig(),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: ValidationSection(state: state),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Windows v1 明确不支持自动解锁'), findsWidgets);
+  });
+
   testWidgets('refreshes capabilities from system section', (tester) async {
     final platform = MockBleunlockPlatform(
       scannerCapability: const CapabilityStatus.poweredOff('Bluetooth off'),
@@ -2473,13 +2552,19 @@ void main() {
     expect(windowsEntry['gateLabel'], 'Windows build verification');
     expect(windowsEntry['status'], 'passed');
     expect(windowsEntry['validationSessionId'], 'validation-manual-001');
-    expect(windowsEntry['path'], windowsGateFile.path);
+    expect(
+      windowsEntry['path'].toString().replaceAll('/', '\\'),
+      windowsGateFile.path.replaceAll('/', '\\'),
+    );
     expect(windowsEntry['filename'], windowsGateFile.uri.pathSegments.last);
     expect(scanEntry['type'], 'externalValidationGate');
     expect(scanEntry['gateLabel'], 'Real BLE scan');
     expect(scanEntry['status'], 'passed');
     expect(scanEntry['validationSessionId'], 'validation-manual-001');
-    expect(scanEntry['path'], realBleScanGateFile.path);
+    expect(
+      scanEntry['path'].toString().replaceAll('/', '\\'),
+      realBleScanGateFile.path.replaceAll('/', '\\'),
+    );
     expect(scanEntry['filename'], realBleScanGateFile.uri.pathSegments.last);
 
     await tester.dragUntilVisible(

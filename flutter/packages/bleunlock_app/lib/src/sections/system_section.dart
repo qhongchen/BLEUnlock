@@ -56,6 +56,8 @@ class SystemSection extends StatelessWidget {
             label: '自动解锁',
             value: snapshot.autoUnlockCapabilityLabel,
           ),
+          if (snapshot.windowsV1ReadinessLabel != null)
+            _WindowsV1ReadinessRow(label: snapshot.windowsV1ReadinessLabel!),
           if (snapshot.autoUnlockPermissionSettingsAvailable)
             _AutoUnlockPermissionRow(
               onOpened: onMacAutoUnlockPermissionSettingsOpened,
@@ -76,6 +78,32 @@ class SystemSection extends StatelessWidget {
             isEnabled: snapshot.startupEnabled,
             capabilityLabel: snapshot.startupCapabilityLabel,
             onChanged: onStartupChanged,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _WindowsV1ReadinessRow extends StatelessWidget {
+  const _WindowsV1ReadinessRow({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.info_outline, size: 18),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              zhDisplayText(label),
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
           ),
         ],
       ),

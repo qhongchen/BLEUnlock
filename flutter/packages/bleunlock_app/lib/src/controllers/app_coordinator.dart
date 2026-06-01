@@ -1666,6 +1666,7 @@ class AppCoordinator {
     if (currentDecision == null) {
       _value = DashboardState(
         snapshot: DashboardSnapshot(
+          platformLabel: platform.platformLabel,
           monitoringStatus: _monitoringStatusLabel,
           stateLabel: _isSessionLocked ? 'Locked' : 'Idle',
           bestRssi: null,
@@ -1693,6 +1694,7 @@ class AppCoordinator {
     } else {
       _value = DashboardState(
         snapshot: snapshotFromDecision(
+          platformLabel: platform.platformLabel,
           decision: currentDecision,
           config: config,
           isMonitoring: _isMonitoring,

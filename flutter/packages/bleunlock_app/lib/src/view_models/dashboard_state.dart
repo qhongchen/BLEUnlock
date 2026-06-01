@@ -5,6 +5,7 @@ import 'package:bleunlock_platform_interface/bleunlock_platform_interface.dart';
 
 class DashboardSnapshot {
   const DashboardSnapshot({
+    this.platformLabel = 'unknown',
     required this.monitoringStatus,
     required this.stateLabel,
     required this.bestRssi,
@@ -23,7 +24,8 @@ class DashboardSnapshot {
   });
 
   const DashboardSnapshot.initial()
-      : monitoringStatus = 'Monitoring paused',
+      : platformLabel = 'unknown',
+        monitoringStatus = 'Monitoring paused',
         stateLabel = 'Idle',
         bestRssi = null,
         selectedDeviceCount = 0,
@@ -39,6 +41,7 @@ class DashboardSnapshot {
         autoUnlockSecretEditable = false,
         autoUnlockPermissionSettingsAvailable = false;
 
+  final String platformLabel;
   final String monitoringStatus;
   final String stateLabel;
   final int? bestRssi;
@@ -64,8 +67,26 @@ class DashboardSnapshot {
   String get autoUnlockSecretLabel =>
       autoUnlockSecretConfigured ? 'configured' : 'missing';
 
+  bool get isWindowsPlatform => platformLabel.trim().toLowerCase() == 'windows';
+
+  bool get isWindowsV1AutoUnlockUnsupported {
+    return isWindowsPlatform &&
+        autoUnlockCapabilityLabel.trim().toLowerCase() == 'unsupported';
+  }
+
+  String? get windowsV1ReadinessLabel {
+    if (!isWindowsPlatform) {
+      return null;
+    }
+    if (isWindowsV1AutoUnlockUnsupported) {
+      return 'Windows v1 automatic unlock intentionally unsupported';
+    }
+    return 'Windows automatic unlock capability changed; review v1 scope';
+  }
+
   Map<String, Object?> toDiagnosticJson() {
     return {
+      'platformLabel': platformLabel,
       'monitoringStatus': monitoringStatus,
       'stateLabel': stateLabel,
       if (bestRssi != null) 'bestRssi': bestRssi,
@@ -82,6 +103,8 @@ class DashboardSnapshot {
       'autoUnlockSecretEditable': autoUnlockSecretEditable,
       'autoUnlockPermissionSettingsAvailable':
           autoUnlockPermissionSettingsAvailable,
+      if (windowsV1ReadinessLabel != null)
+        'windowsV1ReadinessLabel': windowsV1ReadinessLabel,
     };
   }
 }
@@ -769,6 +792,7 @@ class AcceptanceSummary {
     required this.hasErrorEvidence,
     required this.observedSessionStates,
     required this.observedDeviceIds,
+    required this.platformLabel,
     required this.autoUnlockCapabilityLabel,
   }) : _visibleLogs = visibleLogs;
 
@@ -829,6 +853,7 @@ class AcceptanceSummary {
       ),
       observedSessionStates: observedSessionStates,
       observedDeviceIds: observedDeviceIds,
+      platformLabel: state.snapshot.platformLabel,
       autoUnlockCapabilityLabel: state.snapshot.autoUnlockCapabilityLabel,
     );
   }
@@ -855,8 +880,26 @@ class AcceptanceSummary {
   final bool hasErrorEvidence;
   final List<String> observedSessionStates;
   final List<String> observedDeviceIds;
+  final String platformLabel;
   final String autoUnlockCapabilityLabel;
   final List<DashboardLogEntry> _visibleLogs;
+
+  bool get isWindowsPlatform => platformLabel.trim().toLowerCase() == 'windows';
+
+  bool get isWindowsV1AutoUnlockUnsupported {
+    return isWindowsPlatform &&
+        autoUnlockCapabilityLabel.trim().toLowerCase() == 'unsupported';
+  }
+
+  String? get windowsV1ReadinessLabel {
+    if (!isWindowsPlatform) {
+      return null;
+    }
+    if (isWindowsV1AutoUnlockUnsupported) {
+      return 'Windows v1 automatic unlock intentionally unsupported';
+    }
+    return 'Windows automatic unlock capability changed; review v1 scope';
+  }
 
   Map<String, Object?> toDiagnosticJson() {
     return {
@@ -882,7 +925,12 @@ class AcceptanceSummary {
       'hasErrorEvidence': hasErrorEvidence,
       'observedSessionStates': observedSessionStates,
       'observedDeviceIds': observedDeviceIds,
+      'platformLabel': platformLabel,
       'autoUnlockCapabilityLabel': autoUnlockCapabilityLabel,
+      'isWindowsV1AutoUnlockUnsupported':
+          isWindowsV1AutoUnlockUnsupported,
+      if (windowsV1ReadinessLabel != null)
+        'windowsV1ReadinessLabel': windowsV1ReadinessLabel,
       'requiredChecklistCount': requiredChecklistCount,
       'completedRequiredChecklistCount': completedRequiredChecklistCount,
       'missingRequiredEvidenceCount': missingRequiredEvidenceCount,
@@ -903,7 +951,7 @@ class AcceptanceSummary {
   List<AcceptanceChecklistItem> get checklistItems {
     final isAutoUnlockUnsupported =
         autoUnlockCapabilityLabel.trim().toLowerCase() == 'unsupported';
-    return [
+    final items = [
       AcceptanceChecklistItem(
         id: 'realBleScan',
         label: 'Real BLE scan',
@@ -1029,6 +1077,19 @@ class AcceptanceSummary {
         ),
       ),
     ];
+    if (isWindowsPlatform) {
+      items.insert(
+        6,
+        AcceptanceChecklistItem(
+          id: 'windowsV1Scope',
+          label: 'Windows v1 scope',
+          status: isWindowsV1AutoUnlockUnsupported ? 'observed' : 'missing',
+          required: true,
+          evidence: const [],
+        ),
+      );
+    }
+    return items;
   }
 
   List<DashboardLogEntry> _evidenceFor(
@@ -1069,6 +1130,15 @@ class AcceptanceSummary {
         ],
         itemsById: itemsById,
       ),
+      if (isWindowsPlatform)
+        _validationStep(
+          id: 'windowsV1Scope',
+          label: 'Windows v1 scope',
+          checklistIds: const [
+            'windowsV1Scope',
+          ],
+          itemsById: itemsById,
+        ),
       _validationStep(
         id: 'trayMenu',
         label: 'Tray menu',
@@ -1398,6 +1468,8 @@ String _runbookAction(String stepId) {
       return 'Trigger automatic lock and wake';
     case 'macAutoUnlock':
       return 'Validate macOS automatic unlock';
+    case 'windowsV1Scope':
+      return 'Confirm Windows v1 automatic unlock boundary';
     case 'trayMenu':
       return 'Use every tray menu action';
     case 'startupAtLogin':
@@ -1415,6 +1487,8 @@ String _runbookExpectedEvidence(String stepId) {
       return 'Auto lock action, wake action';
     case 'macAutoUnlock':
       return 'macOS auto unlock action';
+    case 'windowsV1Scope':
+      return 'Windows automatic unlock unsupported by design';
     case 'trayMenu':
       return 'Tray open settings, start monitoring, pause monitoring, lock now, quit';
     case 'startupAtLogin':
@@ -1432,6 +1506,8 @@ String _runbookNextActionHint(String stepId, List<String> missingLabels) {
       return 'Move the selected device away until automatic lock is logged, then bring it close again to trigger wake.';
     case 'macAutoUnlock':
       return 'Enable macOS automatic unlock, grant Accessibility permission, save the password, lock the session, then bring the selected device close.';
+    case 'windowsV1Scope':
+      return 'Keep Windows v1 focused on automatic lock, wake, tray, startup, and diagnostics; do not require automatic unlock evidence.';
     case 'trayMenu':
       return _trayRunbookHint(missingLabels);
     case 'startupAtLogin':
@@ -1760,6 +1836,7 @@ String _externalGateLabel(Map<String, Object?> gate) {
 }
 
 DashboardSnapshot snapshotFromDecision({
+  required String platformLabel,
   required PresenceDecision decision,
   required ProximityConfig config,
   required bool isMonitoring,
@@ -1778,6 +1855,7 @@ DashboardSnapshot snapshotFromDecision({
   required bool autoUnlockPermissionSettingsAvailable,
 }) {
   return DashboardSnapshot(
+    platformLabel: platformLabel,
     monitoringStatus: isMonitoring
         ? 'Monitoring'
         : isScanning
