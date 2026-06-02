@@ -87,12 +87,28 @@ Future<void> testWindowsNativeCachesAndResolvesDeviceNames() async {
 
   assert(source.contains('g_device_name_cache'));
   assert(source.contains('BluetoothLEDevice::FromBluetoothAddressAsync'));
+  assert(source.contains('DeviceInformationNameCandidates'));
+  assert(source.contains('device.DeviceInformation()'));
+  assert(source.contains('DeviceInformation::CreateFromIdAsync'));
+  assert(source.contains('System.ItemNameDisplay'));
+  assert(source.contains('System.Devices.FriendlyName'));
+  assert(source.contains('BluetoothAddressType::Unspecified'));
+  assert(source.contains('args.BluetoothAddressType()'));
+  assert(source.contains('GattServiceUuids::GenericAccess()'));
+  assert(source.contains('GattCharacteristicUuids::GapDeviceName()'));
+  assert(source.contains('ReadValueAsync'));
+  assert(source.contains('BluetoothCacheMode::Uncached'));
+  assert(source.contains('g_last_scan_event_by_address'));
+  assert(source.contains('QueueResolvedDeviceNameEvent'));
   assert(source.contains('DisplayNameForAdvertisement'));
-  assert(source.contains('ScheduleDeviceNameResolution(bluetooth_address);'));
+  assert(source.contains('IsUsefulDeviceName'));
+  assert(source.contains('LooksLikeAddressName'));
+  assert(source.contains('ScheduleDeviceNameResolution(bluetooth_address,'));
   assert(source.contains('CacheDeviceName(bluetooth_address, display_name);'));
   assert(source.contains('CachedDeviceName(bluetooth_address)'));
   assert(source.contains('ShouldResolveDeviceName(bluetooth_address,'));
   assert(source.contains('if (HasText(display_name))'));
+  assert(source.contains('RememberLastScanEvent(bluetooth_address, event);'));
   assert(source.contains(
     'event[flutter::EncodableValue("displayName")] =',
   ));
@@ -115,10 +131,8 @@ Future<void> testWindowsNativeFormatsAddressHintForDiagnostics() async {
   assert(source.contains('std::string FormatBluetoothAddressHint'));
   assert(source.contains('event[flutter::EncodableValue("deviceId")]'));
   assert(source.contains('event[flutter::EncodableValue("addressHint")]'));
-  assert(source.contains('FormatBluetoothAddress(args.BluetoothAddress())'));
-  assert(
-    source.contains('FormatBluetoothAddressHint(args.BluetoothAddress())'),
-  );
+  assert(source.contains('FormatBluetoothAddress(bluetooth_address)'));
+  assert(source.contains('FormatBluetoothAddressHint(bluetooth_address)'));
 }
 
 Future<void> testWindowsNativeTrayMenuUsesMonitoringState() async {

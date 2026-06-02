@@ -32,6 +32,8 @@ class BleunlockWindowsPlugin : public flutter::Plugin {
                                 WPARAM wparam,
                                 LPARAM lparam);
 
+    void QueueScanEvent(flutter::EncodableMap event);
+
   private:
     void HandleMethodCall(
         const flutter::MethodCall<flutter::EncodableValue> &method_call,
@@ -42,8 +44,6 @@ class BleunlockWindowsPlugin : public flutter::Plugin {
     void StopScan();
 
     flutter::EncodableValue GetScannerCapability();
-
-    void QueueScanEvent(flutter::EncodableMap event);
 
     void FlushScanEvents();
 
