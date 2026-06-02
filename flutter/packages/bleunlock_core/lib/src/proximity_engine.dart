@@ -34,6 +34,8 @@ class ProximityEngine {
       lastSeenAt: sample.seenAt,
       manufacturerData: _preferredManufacturerData(
           previousDevice?.manufacturerData, sample.manufacturerData),
+      rawAdvertisement:
+          sample.rawAdvertisement ?? previousDevice?.rawAdvertisement,
       isSelected: isSelected,
     );
 

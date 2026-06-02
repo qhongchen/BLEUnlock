@@ -126,8 +126,45 @@ class WindowsBleScanner implements BleScanner {
       manufacturerData: manufacturerData is List
           ? manufacturerData.whereType<int>().toList(growable: false)
           : null,
+      rawAdvertisement: _jsonMap(value['rawAdvertisement']),
     );
   }
+}
+
+Map<String, Object?>? _jsonMap(Object? value) {
+  if (value is! Map) {
+    return null;
+  }
+
+  final result = <String, Object?>{};
+  for (final entry in value.entries) {
+    final key = entry.key;
+    if (key is! String) {
+      continue;
+    }
+    result[key] = _jsonValue(entry.value);
+  }
+  return result.isEmpty ? null : Map.unmodifiable(result);
+}
+
+Object? _jsonValue(Object? value) {
+  if (value == null || value is String || value is num || value is bool) {
+    return value;
+  }
+  if (value is List) {
+    return value.map(_jsonValue).toList(growable: false);
+  }
+  if (value is Map) {
+    final result = <String, Object?>{};
+    for (final entry in value.entries) {
+      final key = entry.key;
+      if (key is String) {
+        result[key] = _jsonValue(entry.value);
+      }
+    }
+    return Map.unmodifiable(result);
+  }
+  return value.toString();
 }
 
 String? _normalizedNativeText(Object? value) {

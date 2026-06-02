@@ -738,6 +738,7 @@ class AppCoordinator {
         displayName: _normalizedText(mergedEvent.displayName),
         addressHint: _normalizedText(mergedEvent.addressHint),
         manufacturerData: mergedEvent.manufacturerData,
+        rawAdvertisement: mergedEvent.rawAdvertisement,
       ),
     );
     _appendScanLogIfUseful(mergedEvent);
@@ -761,6 +762,7 @@ class AppCoordinator {
         previous.manufacturerData,
         next.manufacturerData,
       ),
+      rawAdvertisement: next.rawAdvertisement ?? previous.rawAdvertisement,
     );
   }
 
@@ -846,6 +848,7 @@ class AppCoordinator {
         lastRssi: event.rssi,
         lastSeenAt: event.seenAt,
         manufacturerData: event.manufacturerData,
+        rawAdvertisement: event.rawAdvertisement,
         isSelected: _selectedDeviceIds.contains(event.deviceId),
       );
     }
@@ -1872,6 +1875,7 @@ class AppCoordinator {
       rssi: event.rssi,
       reason: 'bleAdvertisement',
       manufacturerData: event.manufacturerData,
+      rawAdvertisement: event.rawAdvertisement,
       sessionState: _sessionState,
     );
   }
@@ -1923,6 +1927,7 @@ class AppCoordinator {
     int? rssi,
     String? reason,
     List<int>? manufacturerData,
+    Map<String, Object?>? rawAdvertisement,
     DashboardSessionState? sessionState,
   }) {
     _logs.insert(
@@ -1938,6 +1943,7 @@ class AppCoordinator {
         rssi: rssi,
         reason: reason,
         manufacturerData: manufacturerData,
+        rawAdvertisement: rawAdvertisement,
         sessionState: sessionState ?? _sessionState,
       ),
     );

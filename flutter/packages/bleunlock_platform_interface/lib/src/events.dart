@@ -6,6 +6,7 @@ class BleScanEvent {
     this.displayName,
     this.addressHint,
     this.manufacturerData,
+    this.rawAdvertisement,
   });
 
   final String deviceId;
@@ -14,6 +15,7 @@ class BleScanEvent {
   final String? displayName;
   final String? addressHint;
   final List<int>? manufacturerData;
+  final Map<String, Object?>? rawAdvertisement;
 }
 
 enum SessionEventKind {

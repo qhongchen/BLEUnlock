@@ -22,6 +22,7 @@ class BleDevice {
     this.lastRssi,
     this.lastSeenAt,
     this.manufacturerData,
+    this.rawAdvertisement,
     this.isSelected = false,
   });
 
@@ -31,6 +32,7 @@ class BleDevice {
   final int? lastRssi;
   final DateTime? lastSeenAt;
   final List<int>? manufacturerData;
+  final Map<String, Object?>? rawAdvertisement;
   final bool isSelected;
 }
 
@@ -94,6 +96,7 @@ class BleScanSample {
     this.displayName,
     this.addressHint,
     this.manufacturerData,
+    this.rawAdvertisement,
   });
 
   final String deviceId;
@@ -102,6 +105,7 @@ class BleScanSample {
   final String? displayName;
   final String? addressHint;
   final List<int>? manufacturerData;
+  final Map<String, Object?>? rawAdvertisement;
 }
 
 class DevicePresence {
