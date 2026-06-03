@@ -249,6 +249,7 @@ class DashboardLogEntry {
     this.rssi,
     this.reason,
     this.manufacturerData,
+    this.rawAdvertisement,
     this.sessionState,
   });
 
@@ -262,6 +263,7 @@ class DashboardLogEntry {
   final int? rssi;
   final String? reason;
   final List<int>? manufacturerData;
+  final Map<String, Object?>? rawAdvertisement;
   final DashboardSessionState? sessionState;
 
   DashboardLogLevel get level {
@@ -307,6 +309,7 @@ class DashboardLogEntry {
       if (sessionState != null) 'sessionState': sessionState!.label,
       if (manufacturerDataHex != null)
         'manufacturerDataHex': manufacturerDataHex,
+      if (rawAdvertisement != null) 'rawAdvertisement': rawAdvertisement,
     };
   }
 
@@ -381,6 +384,7 @@ class DashboardLogFilter {
       if (entry.reason != null) entry.reason,
       if (entry.sessionState != null) entry.sessionState!.label,
       if (entry.manufacturerDataHex != null) entry.manufacturerDataHex,
+      if (entry.rawAdvertisement != null) jsonEncode(entry.rawAdvertisement),
     ].join(' ').toLowerCase();
   }
 }
@@ -927,8 +931,7 @@ class AcceptanceSummary {
       'observedDeviceIds': observedDeviceIds,
       'platformLabel': platformLabel,
       'autoUnlockCapabilityLabel': autoUnlockCapabilityLabel,
-      'isWindowsV1AutoUnlockUnsupported':
-          isWindowsV1AutoUnlockUnsupported,
+      'isWindowsV1AutoUnlockUnsupported': isWindowsV1AutoUnlockUnsupported,
       if (windowsV1ReadinessLabel != null)
         'windowsV1ReadinessLabel': windowsV1ReadinessLabel,
       'requiredChecklistCount': requiredChecklistCount,

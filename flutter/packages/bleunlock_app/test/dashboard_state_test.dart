@@ -252,6 +252,19 @@ void testLogEntryExportsStableDiagnosticJson() {
     rssi: -52,
     reason: 'bleAdvertisement',
     manufacturerData: const [76, 0, 16, 5],
+    rawAdvertisement: const {
+      'advertisementType': 'connectableUndirected',
+      'localName': 'Xiaomi Smart Band',
+      'manufacturerDataSections': [
+        {
+          'companyId': 76,
+          'companyIdHex': '0x004C',
+          'dataHex': '1005',
+          'payloadHex': '4C001005',
+        },
+      ],
+      'serviceUuids': ['0000180f-0000-1000-8000-00805f9b34fb'],
+    },
   );
 
   final json = jsonDecode(entry.diagnosticJsonLine) as Map<String, Object?>;
@@ -267,6 +280,13 @@ void testLogEntryExportsStableDiagnosticJson() {
   assert(json['rssi'] == -52);
   assert(json['reason'] == 'bleAdvertisement');
   assert(json['manufacturerDataHex'] == '4C001005');
+  final rawAdvertisement = json['rawAdvertisement'] as Map<String, Object?>;
+  assert(rawAdvertisement['localName'] == 'Xiaomi Smart Band');
+  assert(rawAdvertisement['advertisementType'] == 'connectableUndirected');
+  assert(
+    (rawAdvertisement['serviceUuids'] as List<Object?>).single ==
+        '0000180f-0000-1000-8000-00805f9b34fb',
+  );
 }
 
 void testStateExportsDiagnosticJsonLines() {

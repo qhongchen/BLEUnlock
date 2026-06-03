@@ -85,8 +85,11 @@ using BluetoothLEAdvertisementWatcher = winrt::Windows::Devices::Bluetooth::
     Advertisement::BluetoothLEAdvertisementWatcher;
 using BluetoothLEAdvertisementWatcherStatus = winrt::Windows::Devices::
     Bluetooth::Advertisement::BluetoothLEAdvertisementWatcherStatus;
+using BluetoothLEAdvertisementType = winrt::Windows::Devices::Bluetooth::
+    Advertisement::BluetoothLEAdvertisementType;
 using BluetoothLEScanningMode =
     winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEScanningMode;
+using IBuffer = winrt::Windows::Storage::Streams::IBuffer;
 using DataReader = winrt::Windows::Storage::Streams::DataReader;
 
 const GUID kDisplayPowerGuid = GUID_CONSOLE_DISPLAY_STATE;
@@ -161,6 +164,80 @@ std::string FormatBluetoothAddressHint(uint64_t bluetooth_address) {
         }
         stream << compact.substr(index, 2);
     }
+    return stream.str();
+}
+
+std::string FormatByteHex(uint32_t value, int width) {
+    std::ostringstream stream;
+    stream << "0x" << std::uppercase << std::hex << std::setw(width)
+           << std::setfill('0') << value;
+    return stream.str();
+}
+
+std::string BytesToHex(const std::vector<uint8_t> &bytes) {
+    std::ostringstream stream;
+    stream << std::uppercase << std::hex << std::setfill('0');
+    for (const auto byte : bytes) {
+        stream << std::setw(2) << static_cast<int>(byte);
+    }
+    return stream.str();
+}
+
+std::vector<uint8_t> BytesFromBuffer(const IBuffer &buffer) {
+    std::vector<uint8_t> bytes;
+    if (!buffer || buffer.Length() == 0) {
+        return bytes;
+    }
+
+    auto reader = DataReader::FromBuffer(buffer);
+    bytes.resize(buffer.Length());
+    reader.ReadBytes(winrt::array_view<uint8_t>(bytes));
+    return bytes;
+}
+
+std::string BluetoothAddressTypeLabel(BluetoothAddressType type) {
+    switch (type) {
+        case BluetoothAddressType::Public:
+            return "public";
+        case BluetoothAddressType::Random:
+            return "random";
+        case BluetoothAddressType::Unspecified:
+        default:
+            return "unspecified";
+    }
+}
+
+std::string AdvertisementTypeLabel(BluetoothLEAdvertisementType type) {
+    switch (type) {
+        case BluetoothLEAdvertisementType::ConnectableUndirected:
+            return "connectableUndirected";
+        case BluetoothLEAdvertisementType::ConnectableDirected:
+            return "connectableDirected";
+        case BluetoothLEAdvertisementType::ScannableUndirected:
+            return "scannableUndirected";
+        case BluetoothLEAdvertisementType::NonConnectableUndirected:
+            return "nonConnectableUndirected";
+        case BluetoothLEAdvertisementType::ScanResponse:
+            return "scanResponse";
+        default:
+            return "unknown";
+    }
+}
+
+std::string GuidToString(const winrt::guid &value) {
+    std::ostringstream stream;
+    stream << std::nouppercase << std::hex << std::setfill('0')
+           << std::setw(8) << value.Data1 << "-"
+           << std::setw(4) << value.Data2 << "-"
+           << std::setw(4) << value.Data3 << "-"
+           << std::setw(2) << static_cast<int>(value.Data4[0])
+           << std::setw(2) << static_cast<int>(value.Data4[1]) << "-"
+           << std::setw(2) << static_cast<int>(value.Data4[2])
+           << std::setw(2) << static_cast<int>(value.Data4[3])
+           << std::setw(2) << static_cast<int>(value.Data4[4])
+           << std::setw(2) << static_cast<int>(value.Data4[5])
+           << std::setw(2) << static_cast<int>(value.Data4[6])
+           << std::setw(2) << static_cast<int>(value.Data4[7]);
     return stream.str();
 }
 
@@ -489,18 +566,102 @@ flutter::EncodableList ManufacturerDataBytes(
         result.emplace_back(static_cast<int32_t>(company_id & 0xFF));
         result.emplace_back(static_cast<int32_t>((company_id >> 8) & 0xFF));
 
-        const auto data = section.Data();
-        if (!data || data.Length() == 0) {
-            continue;
-        }
-
-        auto reader = DataReader::FromBuffer(data);
-        std::vector<uint8_t> bytes(data.Length());
-        reader.ReadBytes(winrt::array_view<uint8_t>(bytes));
+        const auto bytes = BytesFromBuffer(section.Data());
         for (const auto byte : bytes) {
             result.emplace_back(static_cast<int32_t>(byte));
         }
     }
+    return result;
+}
+
+flutter::EncodableList ManufacturerDataSections(
+    const BluetoothLEAdvertisement &advertisement) {
+    flutter::EncodableList result;
+    for (const auto &section : advertisement.ManufacturerData()) {
+        const auto company_id = section.CompanyId();
+        const auto bytes = BytesFromBuffer(section.Data());
+        std::vector<uint8_t> payload;
+        payload.reserve(bytes.size() + 2);
+        payload.emplace_back(static_cast<uint8_t>(company_id & 0xFF));
+        payload.emplace_back(static_cast<uint8_t>((company_id >> 8) & 0xFF));
+        payload.insert(payload.end(), bytes.begin(), bytes.end());
+
+        flutter::EncodableMap item;
+        item[flutter::EncodableValue("companyId")] =
+            flutter::EncodableValue(static_cast<int32_t>(company_id));
+        item[flutter::EncodableValue("companyIdHex")] =
+            flutter::EncodableValue(FormatByteHex(company_id, 4));
+        item[flutter::EncodableValue("dataHex")] =
+            flutter::EncodableValue(BytesToHex(bytes));
+        item[flutter::EncodableValue("payloadHex")] =
+            flutter::EncodableValue(BytesToHex(payload));
+        result.emplace_back(flutter::EncodableValue(std::move(item)));
+    }
+    return result;
+}
+
+flutter::EncodableList AdvertisementDataSections(
+    const BluetoothLEAdvertisement &advertisement) {
+    flutter::EncodableList result;
+    for (const auto &section : advertisement.DataSections()) {
+        const auto data_type = section.DataType();
+        const auto bytes = BytesFromBuffer(section.Data());
+
+        flutter::EncodableMap item;
+        item[flutter::EncodableValue("dataType")] =
+            flutter::EncodableValue(static_cast<int32_t>(data_type));
+        item[flutter::EncodableValue("dataTypeHex")] =
+            flutter::EncodableValue(FormatByteHex(data_type, 2));
+        item[flutter::EncodableValue("dataHex")] =
+            flutter::EncodableValue(BytesToHex(bytes));
+        result.emplace_back(flutter::EncodableValue(std::move(item)));
+    }
+    return result;
+}
+
+flutter::EncodableList ServiceUuids(
+    const BluetoothLEAdvertisement &advertisement) {
+    flutter::EncodableList result;
+    for (const auto &uuid : advertisement.ServiceUuids()) {
+        result.emplace_back(GuidToString(uuid));
+    }
+    return result;
+}
+
+flutter::EncodableMap RawAdvertisementMap(
+    const BluetoothLEAdvertisementReceivedEventArgs &args,
+    const std::string &address,
+    const std::string &address_hint,
+    int64_t seen_at_millis,
+    const flutter::EncodableList &manufacturer_data) {
+    const auto advertisement = args.Advertisement();
+
+    flutter::EncodableMap result;
+    result[flutter::EncodableValue("bluetoothAddress")] =
+        flutter::EncodableValue(address);
+    result[flutter::EncodableValue("bluetoothAddressHint")] =
+        flutter::EncodableValue(address_hint);
+    result[flutter::EncodableValue("bluetoothAddressType")] =
+        flutter::EncodableValue(BluetoothAddressTypeLabel(
+            args.BluetoothAddressType()));
+    result[flutter::EncodableValue("advertisementType")] =
+        flutter::EncodableValue(
+            AdvertisementTypeLabel(args.AdvertisementType()));
+    result[flutter::EncodableValue("localName")] =
+        flutter::EncodableValue(winrt::to_string(advertisement.LocalName()));
+    result[flutter::EncodableValue("rssi")] =
+        flutter::EncodableValue(static_cast<int32_t>(
+            args.RawSignalStrengthInDBm()));
+    result[flutter::EncodableValue("seenAtMillis")] =
+        flutter::EncodableValue(seen_at_millis);
+    result[flutter::EncodableValue("manufacturerData")] =
+        flutter::EncodableValue(manufacturer_data);
+    result[flutter::EncodableValue("manufacturerDataSections")] =
+        flutter::EncodableValue(ManufacturerDataSections(advertisement));
+    result[flutter::EncodableValue("dataSections")] =
+        flutter::EncodableValue(AdvertisementDataSections(advertisement));
+    result[flutter::EncodableValue("serviceUuids")] =
+        flutter::EncodableValue(ServiceUuids(advertisement));
     return result;
 }
 
@@ -514,6 +675,7 @@ flutter::EncodableMap ScanEventFromAdvertisement(
     const auto advertisement = args.Advertisement();
     const auto display_name = DisplayNameForAdvertisement(
         bluetooth_address, bluetooth_address_type, advertisement, now_millis);
+    const auto manufacturer_data = ManufacturerDataBytes(advertisement);
 
     flutter::EncodableMap event;
     event[flutter::EncodableValue("deviceId")] = flutter::EncodableValue(address);
@@ -529,7 +691,10 @@ flutter::EncodableMap ScanEventFromAdvertisement(
     event[flutter::EncodableValue("seenAtMillis")] =
         flutter::EncodableValue(now_millis);
     event[flutter::EncodableValue("manufacturerData")] =
-        flutter::EncodableValue(ManufacturerDataBytes(advertisement));
+        flutter::EncodableValue(manufacturer_data);
+    event[flutter::EncodableValue("rawAdvertisement")] =
+        flutter::EncodableValue(RawAdvertisementMap(
+            args, address, address_hint, now_millis, manufacturer_data));
     RememberLastScanEvent(bluetooth_address, event);
     return event;
 }

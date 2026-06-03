@@ -430,6 +430,17 @@ Future<void> testCoordinatorExportsDiagnosticLogs() async {
       rssi: -55,
       seenAt: DateTime.utc(2026, 5, 28, 10),
       manufacturerData: const [76, 0, 16, 5],
+      rawAdvertisement: const {
+        'localName': 'Xiaomi Smart Band',
+        'manufacturerDataSections': [
+          {
+            'companyId': 76,
+            'companyIdHex': '0x004C',
+            'dataHex': '1005',
+            'payloadHex': '4C001005',
+          },
+        ],
+      },
     ),
   );
   await pumpEventQueue();
@@ -447,7 +458,9 @@ Future<void> testCoordinatorExportsDiagnosticLogs() async {
         entry['addressHint'] == 'AA:BB:CC:DD:EE:FF' &&
         entry['rssi'] == -55 &&
         entry['reason'] == 'bleAdvertisement' &&
-        entry['manufacturerDataHex'] == '4C001005',
+        entry['manufacturerDataHex'] == '4C001005' &&
+        (entry['rawAdvertisement'] as Map<String, Object?>)['localName'] ==
+            'Xiaomi Smart Band',
   ));
   assert(decoded.any(
     (entry) =>

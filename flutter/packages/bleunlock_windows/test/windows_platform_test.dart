@@ -15,6 +15,7 @@ Future<void> main() async {
   await testWindowsNativeCachesAndResolvesDeviceNames();
   await testWindowsNativeUsesActiveBleScanningForNames();
   await testWindowsNativeFormatsAddressHintForDiagnostics();
+  await testWindowsNativeExportsRawAdvertisementDiagnostics();
   await testWindowsPlatformReportsFirstVersionCapabilities();
   await testWindowsUnlockIsUnsupported();
   await testWindowsScannerRefreshesCapabilityFromBridge();
@@ -135,6 +136,24 @@ Future<void> testWindowsNativeFormatsAddressHintForDiagnostics() async {
   assert(source.contains('FormatBluetoothAddressHint(bluetooth_address)'));
 }
 
+Future<void> testWindowsNativeExportsRawAdvertisementDiagnostics() async {
+  const sourcePath =
+      'flutter/packages/bleunlock_windows/windows/bleunlock_windows_plugin.cpp';
+  final source = File(sourcePath).readAsStringSync();
+
+  assert(source.contains('RawAdvertisementMap('));
+  assert(source.contains('AdvertisementDataSections('));
+  assert(source.contains('ManufacturerDataSections('));
+  assert(source.contains('ServiceUuids('));
+  assert(source.contains('advertisement.DataSections()'));
+  assert(source.contains('advertisement.ManufacturerData()'));
+  assert(source.contains('advertisement.ServiceUuids()'));
+  assert(source.contains('"rawAdvertisement"'));
+  assert(source.contains('"manufacturerDataSections"'));
+  assert(source.contains('"dataSections"'));
+  assert(source.contains('"serviceUuids"'));
+}
+
 Future<void> testWindowsNativeTrayMenuUsesMonitoringState() async {
   const sourcePath =
       'flutter/packages/bleunlock_windows/windows/bleunlock_windows_plugin.cpp';
@@ -231,6 +250,25 @@ Future<void> testWindowsScannerMapsNativeAdvertisementEvents() async {
         'rssi': -51,
         'seenAtMillis': 1779943200000,
         'manufacturerData': [7, 8, 9],
+        'rawAdvertisement': {
+          'localName': 'Xiaomi Smart Band',
+          'manufacturerDataSections': [
+            {
+              'companyId': 76,
+              'companyIdHex': '0x004C',
+              'dataHex': '1005',
+              'payloadHex': '4C001005',
+            },
+          ],
+          'dataSections': [
+            {
+              'dataType': 255,
+              'dataTypeHex': '0xFF',
+              'dataHex': '4C001005',
+            },
+          ],
+          'serviceUuids': ['0000180f-0000-1000-8000-00805f9b34fb'],
+        },
       },
     ]),
   );
@@ -247,6 +285,16 @@ Future<void> testWindowsScannerMapsNativeAdvertisementEvents() async {
   assert(event.rssi == -51);
   assert(event.seenAt == DateTime.fromMillisecondsSinceEpoch(1779943200000));
   assert(event.manufacturerData!.length == 3);
+  assert(event.rawAdvertisement?['localName'] == 'Xiaomi Smart Band');
+  assert(
+    (event.rawAdvertisement?['serviceUuids'] as List<Object?>).single ==
+        '0000180f-0000-1000-8000-00805f9b34fb',
+  );
+  assert(
+    ((event.rawAdvertisement?['manufacturerDataSections'] as List<Object?>)
+            .single as Map)['payloadHex'] ==
+        '4C001005',
+  );
 
   await scanner.stopScan();
   assert(bridge.stopped);
