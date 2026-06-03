@@ -229,6 +229,9 @@ Future<void> testMacosScannerMapsNativeAdvertisementEvents() async {
         'rssi': -47,
         'seenAtMillis': 1779943200000,
         'manufacturerData': [1, 2, 255],
+        'resolvedNameSource': 'CBPeripheral.name',
+        'rawLocalName': 'N/A',
+        'peripheralName': 'Xiaomi Smart Band',
       },
     ]),
   );
@@ -245,6 +248,9 @@ Future<void> testMacosScannerMapsNativeAdvertisementEvents() async {
   assert(event.rssi == -47);
   assert(event.seenAt == DateTime.fromMillisecondsSinceEpoch(1779943200000));
   assert(event.manufacturerData!.length == 3);
+  assert(event.rawAdvertisement?['resolvedNameSource'] == 'CBPeripheral.name');
+  assert(event.rawAdvertisement?['rawLocalName'] == 'N/A');
+  assert(event.rawAdvertisement?['peripheralName'] == 'Xiaomi Smart Band');
 
   await scanner.stopScan();
   assert(bridge.stopped);

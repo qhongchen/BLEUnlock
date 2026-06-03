@@ -514,18 +514,84 @@ class InMemoryWindowsStartupBridge implements WindowsStartupBridge {
   }
 }
 
+abstract interface class WindowsUnlockBridge {
+  Future<Object?> refreshCapability();
+
+  Future<void> openSettings();
+
+  Future<Object?> unlock();
+}
+
+class InMemoryWindowsUnlockBridge implements WindowsUnlockBridge {
+  Object? capability = const {
+    'kind': 'temporarilyUnavailable',
+    'description': 'Credential Provider component is not installed',
+  };
+  Object? unlockResult = const {
+    'success': false,
+    'reason': 'credentialProviderMissing',
+  };
+  int refreshCapabilityCount = 0;
+  int openSettingsCount = 0;
+  int unlockCount = 0;
+
+  @override
+  Future<Object?> refreshCapability() async {
+    refreshCapabilityCount += 1;
+    return capability;
+  }
+
+  @override
+  Future<void> openSettings() async {
+    openSettingsCount += 1;
+  }
+
+  @override
+  Future<Object?> unlock() async {
+    unlockCount += 1;
+    return unlockResult;
+  }
+}
+
 class WindowsUnlockProvider implements FutureUnlockProvider {
-  @override
-  CapabilityStatus get capability => const CapabilityStatus.unsupported();
+  WindowsUnlockProvider({WindowsUnlockBridge? unlockBridge})
+      : _unlockBridge = unlockBridge ?? InMemoryWindowsUnlockBridge();
+
+  final WindowsUnlockBridge _unlockBridge;
+  CapabilityStatus _capability = const CapabilityStatus.temporarilyUnavailable(
+    'Credential Provider component is not installed',
+  );
 
   @override
-  Future<CapabilityStatus> refreshCapability() async => capability;
+  CapabilityStatus get capability => _capability;
 
   @override
-  Future<void> openPermissionSettings() async {}
+  Future<CapabilityStatus> refreshCapability() async {
+    _capability = _mapNativeCapability(await _unlockBridge.refreshCapability());
+    return _capability;
+  }
+
+  @override
+  Future<void> openPermissionSettings() async {
+    await _unlockBridge.openSettings();
+  }
 
   @override
   Future<UnlockResult> unlock() async {
-    return const UnlockResult(success: false, reason: 'unsupported');
+    return _mapNativeUnlockResult(await _unlockBridge.unlock());
+  }
+
+  UnlockResult _mapNativeUnlockResult(Object? value) {
+    if (value is! Map) {
+      throw ArgumentError.value(value, 'value', 'Expected map unlock result');
+    }
+
+    final success = value['success'];
+    final reason = value['reason'];
+    if (success is! bool || reason is! String) {
+      throw ArgumentError.value(value, 'value', 'Invalid unlock result shape');
+    }
+
+    return UnlockResult(success: success, reason: reason);
   }
 }

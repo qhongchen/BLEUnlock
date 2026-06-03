@@ -597,7 +597,7 @@ void main() {
     await _disposeCoordinator(tester, coordinator);
   });
 
-  testWidgets('system section shows Windows v1 readiness boundary', (
+  testWidgets('system section shows Windows Credential Provider status', (
     tester,
   ) async {
     await tester.pumpWidget(
@@ -633,11 +633,11 @@ void main() {
       ),
     );
 
-    expect(find.text('Windows v1 明确不支持自动解锁'), findsOneWidget);
+    expect(find.text('Windows Credential Provider 组件未安装'), findsOneWidget);
     expect(find.text('Windows'), findsWidgets);
   });
 
-  testWidgets('validation section shows Windows v1 readiness pill', (
+  testWidgets('validation section shows Windows Credential Provider pill', (
     tester,
   ) async {
     final state = DashboardState(
@@ -674,7 +674,7 @@ void main() {
       ),
     );
 
-    expect(find.text('Windows v1 明确不支持自动解锁'), findsWidgets);
+    expect(find.text('Windows Credential Provider 组件未安装'), findsWidgets);
   });
 
   testWidgets('refreshes capabilities from system section', (tester) async {
@@ -1234,8 +1234,7 @@ void main() {
     expect(find.text('0 条证据'), findsWidgets);
   });
 
-  testWidgets('Windows v1 acceptance excludes macOS unlock gate',
-      (tester) async {
+  testWidgets('Windows acceptance excludes macOS unlock gate', (tester) async {
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
@@ -1272,14 +1271,14 @@ void main() {
       ),
     );
 
-    expect(find.text('Windows v1 明确不支持自动解锁'), findsOneWidget);
+    expect(find.text('Windows Credential Provider 组件未安装'), findsOneWidget);
     expect(find.text('自动解锁 不支持'), findsOneWidget);
-    expect(find.text('必需证据已捕获 1/15'), findsOneWidget);
+    expect(find.text('必需证据已捕获 0/15'), findsOneWidget);
     expect(find.text('外部门禁待处理 6'), findsNothing);
     expect(find.text('外部门禁待处理 5'), findsOneWidget);
     expect(find.text('macOS 辅助功能解锁'), findsNothing);
-    expect(find.text('Windows v1 范围'), findsWidgets);
-    expect(find.text('已捕获 1/1'), findsWidgets);
+    expect(find.text('Windows Credential Provider 组件'), findsWidgets);
+    expect(find.text('已捕获 0/1'), findsWidgets);
   });
 
   testWidgets('acceptance readiness shows tray menu action checklist',

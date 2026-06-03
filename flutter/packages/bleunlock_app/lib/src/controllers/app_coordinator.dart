@@ -1963,13 +1963,19 @@ class AppCoordinator {
   }
 
   bool get _isAutoUnlockSecretEditable {
-    return platform.secureStore.capability.isUsable &&
+    return _isMacPlatform &&
+        platform.secureStore.capability.isUsable &&
         platform.unlock.capability.kind != CapabilityStatusKind.unsupported;
   }
 
+  bool get _isMacPlatform {
+    return platform.platformLabel.trim().toLowerCase() == 'macos';
+  }
+
   bool get _isAutoUnlockPermissionSettingsAvailable {
-    return platform.unlock.capability.kind ==
-        CapabilityStatusKind.permissionDenied;
+    return _isMacPlatform &&
+        platform.unlock.capability.kind ==
+            CapabilityStatusKind.permissionDenied;
   }
 
   bool get _isSessionLocked => _sessionState.isLockedLike;

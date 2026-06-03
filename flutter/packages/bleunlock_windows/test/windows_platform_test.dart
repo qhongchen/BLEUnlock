@@ -9,6 +9,7 @@ const _testTimeout = Duration(milliseconds: 500);
 Future<void> main() async {
   await testWindowsNativeStartupUsesFlutterSpecificRunValue();
   await testWindowsNativeRegistersDisplayPowerSessionEvents();
+  await testWindowsNativeWakeDisplayRequestsLoginSurface();
   await testWindowsNativeReportsLockFailuresToDart();
   await testWindowsNativeTrayUsesAppWindowIcon();
   await testWindowsNativeTrayMenuUsesMonitoringState();
@@ -16,8 +17,8 @@ Future<void> main() async {
   await testWindowsNativeUsesActiveBleScanningForNames();
   await testWindowsNativeFormatsAddressHintForDiagnostics();
   await testWindowsNativeExportsRawAdvertisementDiagnostics();
-  await testWindowsPlatformReportsFirstVersionCapabilities();
-  await testWindowsUnlockIsUnsupported();
+  await testWindowsPlatformReportsCredentialProviderPlaceholder();
+  await testWindowsUnlockReportsCredentialProviderMissing();
   await testWindowsScannerRefreshesCapabilityFromBridge();
   await testWindowsScannerStartsAndStopsWithoutNativeBridge();
   await testWindowsScannerMapsNativeAdvertisementEvents();
@@ -50,6 +51,20 @@ Future<void> testWindowsNativeRegistersDisplayPowerSessionEvents() async {
   assert(source.contains('PBT_APMRESUMEAUTOMATIC'));
   assert(source.contains('EmitSessionEvent("displaySleep"'));
   assert(source.contains('EmitSessionEvent("displayWake"'));
+}
+
+Future<void> testWindowsNativeWakeDisplayRequestsLoginSurface() async {
+  const sourcePath =
+      'flutter/packages/bleunlock_windows/windows/bleunlock_windows_plugin.cpp';
+  final source = File(sourcePath).readAsStringSync();
+
+  assert(source.contains('SetThreadExecutionState(ES_CONTINUOUS |'));
+  assert(source.contains('ES_DISPLAY_REQUIRED'));
+  assert(source.contains('SendMessageTimeoutW(HWND_BROADCAST, WM_SYSCOMMAND,'));
+  assert(source.contains('SC_MONITORPOWER'));
+  assert(source.contains('static_cast<LPARAM>(-1)'));
+  assert(source.contains('PulseUserInputForWake();'));
+  assert(source.contains('SendInput(2, input_events, sizeof(INPUT));'));
 }
 
 Future<void> testWindowsNativeReportsLockFailuresToDart() async {
@@ -101,6 +116,13 @@ Future<void> testWindowsNativeCachesAndResolvesDeviceNames() async {
   assert(source.contains('BluetoothCacheMode::Uncached'));
   assert(source.contains('g_last_scan_event_by_address'));
   assert(source.contains('QueueResolvedDeviceNameEvent'));
+  assert(source.contains('NameResolutionDiagnostics'));
+  assert(source.contains('nameResolution'));
+  assert(source.contains('selectedNameSource'));
+  assert(source.contains('advertisement.LocalName'));
+  assert(source.contains('BluetoothLEDevice.Name'));
+  assert(source.contains('DeviceInformation.Name'));
+  assert(source.contains('GattDeviceName'));
   assert(source.contains('DisplayNameForAdvertisement'));
   assert(source.contains('IsUsefulDeviceName'));
   assert(source.contains('LooksLikeAddressName'));
@@ -152,6 +174,8 @@ Future<void> testWindowsNativeExportsRawAdvertisementDiagnostics() async {
   assert(source.contains('"manufacturerDataSections"'));
   assert(source.contains('"dataSections"'));
   assert(source.contains('"serviceUuids"'));
+  assert(source.contains('"nameResolution"'));
+  assert(source.contains('NameResolutionMap(name_resolution)'));
 }
 
 Future<void> testWindowsNativeTrayMenuUsesMonitoringState() async {
@@ -185,7 +209,7 @@ Future<void> testWindowsNativeStartupUsesFlutterSpecificRunValue() async {
       .contains('constexpr wchar_t kStartupValueName[] = L"BLEUnlock";'));
 }
 
-Future<void> testWindowsPlatformReportsFirstVersionCapabilities() async {
+Future<void> testWindowsPlatformReportsCredentialProviderPlaceholder() async {
   final platform = WindowsBleunlockPlatform();
 
   assert(platform.scanner.capability.kind == CapabilityStatusKind.supported);
@@ -194,16 +218,21 @@ Future<void> testWindowsPlatformReportsFirstVersionCapabilities() async {
       platform.secureStore.capability.kind == CapabilityStatusKind.supported);
   assert(platform.tray.capability.kind == CapabilityStatusKind.supported);
   assert(platform.startup.capability.kind == CapabilityStatusKind.supported);
-  assert(platform.unlock.capability.kind == CapabilityStatusKind.unsupported);
+  assert(
+    platform.unlock.capability.kind ==
+        CapabilityStatusKind.temporarilyUnavailable,
+  );
+  assert(platform.unlock.capability.description ==
+      'Credential Provider component is not installed');
 }
 
-Future<void> testWindowsUnlockIsUnsupported() async {
+Future<void> testWindowsUnlockReportsCredentialProviderMissing() async {
   final unlock = WindowsUnlockProvider();
   final result = await unlock.unlock();
 
-  assert(unlock.capability.kind == CapabilityStatusKind.unsupported);
+  assert(unlock.capability.kind == CapabilityStatusKind.temporarilyUnavailable);
   assert(!result.success);
-  assert(result.reason == 'unsupported');
+  assert(result.reason == 'credentialProviderMissing');
 }
 
 Future<void> testWindowsScannerRefreshesCapabilityFromBridge() async {
@@ -268,6 +297,22 @@ Future<void> testWindowsScannerMapsNativeAdvertisementEvents() async {
             },
           ],
           'serviceUuids': ['0000180f-0000-1000-8000-00805f9b34fb'],
+          'nameResolution': {
+            'selectedName': 'Xiaomi Smart Band',
+            'selectedNameSource': 'advertisement.LocalName',
+            'candidates': [
+              {
+                'source': 'advertisement.LocalName',
+                'value': 'Xiaomi Smart Band',
+                'accepted': true,
+              },
+              {
+                'source': 'BluetoothLEDevice.Name',
+                'value': 'NGN3pBIhPPbdrMUliuytgV2g',
+                'accepted': false,
+              },
+            ],
+          },
         },
       },
     ]),
@@ -294,6 +339,12 @@ Future<void> testWindowsScannerMapsNativeAdvertisementEvents() async {
     ((event.rawAdvertisement?['manufacturerDataSections'] as List<Object?>)
             .single as Map)['payloadHex'] ==
         '4C001005',
+  );
+  final nameResolution = event.rawAdvertisement?['nameResolution'] as Map;
+  assert(nameResolution['selectedNameSource'] == 'advertisement.LocalName');
+  assert(
+    ((nameResolution['candidates'] as List<Object?>).last as Map)['source'] ==
+        'BluetoothLEDevice.Name',
   );
 
   await scanner.stopScan();

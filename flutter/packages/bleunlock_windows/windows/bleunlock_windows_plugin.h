@@ -45,6 +45,12 @@ class BleunlockWindowsPlugin : public flutter::Plugin {
 
     flutter::EncodableValue GetScannerCapability();
 
+    flutter::EncodableValue GetUnlockCapability() const;
+
+    flutter::EncodableValue UnlockWithCredentialProvider() const;
+
+    void OpenUnlockSettings() const;
+
     void FlushScanEvents();
 
     bool Lock(DWORD *error_code);

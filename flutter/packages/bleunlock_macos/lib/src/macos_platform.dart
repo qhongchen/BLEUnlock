@@ -117,6 +117,7 @@ class MacosBleScanner implements BleScanner {
     }
 
     final manufacturerData = value['manufacturerData'];
+    final rawAdvertisement = _rawAdvertisementFromNativeEvent(value);
     return BleScanEvent(
       deviceId: deviceId,
       displayName: _normalizedNativeString(value['displayName']),
@@ -126,8 +127,24 @@ class MacosBleScanner implements BleScanner {
       manufacturerData: manufacturerData is List
           ? manufacturerData.whereType<int>().toList(growable: false)
           : null,
+      rawAdvertisement: rawAdvertisement,
     );
   }
+}
+
+Map<String, Object?>? _rawAdvertisementFromNativeEvent(Map value) {
+  final result = <String, Object?>{};
+  void addText(String key) {
+    final text = _normalizedNativeString(value[key]);
+    if (text != null) {
+      result[key] = text;
+    }
+  }
+
+  addText('resolvedNameSource');
+  addText('rawLocalName');
+  addText('peripheralName');
+  return result.isEmpty ? null : Map.unmodifiable(result);
 }
 
 String? _normalizedNativeString(Object? value) {

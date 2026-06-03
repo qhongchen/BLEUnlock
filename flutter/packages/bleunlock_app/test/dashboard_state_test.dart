@@ -7,7 +7,7 @@ import '../lib/src/view_models/dashboard_state.dart';
 void main() {
   testInitialSnapshotUsesDesignDefaults();
   testSnapshotFormatsRssiAndSelectedCount();
-  testWindowsSnapshotWarnsWhenAutoUnlockCapabilityChanges();
+  testWindowsSnapshotReportsCredentialProviderStatus();
   testDeviceViewFormatsLastSeenTime();
   testDevicesFromDecisionSortsByStrongestRssiFirst();
   testLogEntryFormatsStructuredDetails();
@@ -26,10 +26,10 @@ void main() {
   testAcceptanceSummaryExportsSessionScopedJsonLines();
   testAcceptanceChecklistExportsJsonLines();
   testAcceptanceChecklistExportsEvidenceDetails();
-  testAcceptanceChecklistTreatsWindowsAutoUnlockAsUnsupported();
+  testAcceptanceChecklistTreatsWindowsAutoUnlockAsCredentialProviderBacked();
   testAcceptanceChecklistTracksTrayMenuActionsSeparately();
   testAcceptanceChecklistTracksStartupEnableDisableSeparately();
-  testAcceptanceChecklistTracksWindowsV1ScopeSeparately();
+  testAcceptanceChecklistTracksWindowsCredentialProviderSeparately();
   testStateExportsAcceptanceBundleJson();
   testStateExportsRunbookBundleJson();
   testDeviceViewFormatsPlatformIdShortCode();
@@ -86,7 +86,7 @@ void testSnapshotFormatsRssiAndSelectedCount() {
   assert(snapshot.autoUnlockPermissionSettingsAvailable == true);
 }
 
-void testWindowsSnapshotWarnsWhenAutoUnlockCapabilityChanges() {
+void testWindowsSnapshotReportsCredentialProviderStatus() {
   const snapshot = DashboardSnapshot(
     platformLabel: 'Windows',
     monitoringStatus: 'Monitoring paused',
@@ -108,10 +108,12 @@ void testWindowsSnapshotWarnsWhenAutoUnlockCapabilityChanges() {
 
   assert(snapshot.isWindowsPlatform == true);
   assert(snapshot.isWindowsV1AutoUnlockUnsupported == false);
+  assert(snapshot.isWindowsCredentialProviderReady == true);
+  assert(snapshot.isWindowsCredentialProviderMissing == false);
   assert(snapshot.windowsV1ReadinessLabel ==
-      'Windows automatic unlock capability changed; review v1 scope');
+      'Windows Credential Provider component ready');
   assert(snapshot.toDiagnosticJson()['windowsV1ReadinessLabel'] ==
-      'Windows automatic unlock capability changed; review v1 scope');
+      'Windows Credential Provider component ready');
 }
 
 void testDeviceViewFormatsLastSeenTime() {
@@ -1066,7 +1068,8 @@ void testAcceptanceChecklistExportsEvidenceDetails() {
   assert(errors['latestEvidenceAt'] == '2026-05-28T10:00:09.000Z');
 }
 
-void testAcceptanceChecklistTreatsWindowsAutoUnlockAsUnsupported() {
+void
+    testAcceptanceChecklistTreatsWindowsAutoUnlockAsCredentialProviderBacked() {
   final summary = AcceptanceSummary.fromState(
     state: const DashboardState(
       snapshot: DashboardSnapshot(
@@ -1098,11 +1101,11 @@ void testAcceptanceChecklistTreatsWindowsAutoUnlockAsUnsupported() {
     (item) => item.id == 'macAutoUnlockAction',
   );
 
-  assert(macAutoUnlock.status == 'unsupported');
+  assert(macAutoUnlock.status == 'not required');
   assert(macAutoUnlock.required == false);
   assert(summary.requiredChecklistCount == 15);
-  assert(summary.completedRequiredChecklistCount == 1);
-  assert(summary.checklistStatus('windowsV1Scope') == 'observed');
+  assert(summary.completedRequiredChecklistCount == 0);
+  assert(summary.checklistStatus('windowsV1Scope') == 'missing');
   assert(!summary.missingRequiredChecklistLabels
       .contains('macOS auto unlock action'));
 }
@@ -1188,7 +1191,7 @@ void testAcceptanceChecklistTracksStartupEnableDisableSeparately() {
   assert(checklist['startupDisableAction'] == 'observed');
 }
 
-void testAcceptanceChecklistTracksWindowsV1ScopeSeparately() {
+void testAcceptanceChecklistTracksWindowsCredentialProviderSeparately() {
   final summary = AcceptanceSummary.fromState(
     state: const DashboardState(
       snapshot: DashboardSnapshot(
@@ -1225,13 +1228,15 @@ void testAcceptanceChecklistTracksWindowsV1ScopeSeparately() {
   );
 
   assert(summary.windowsV1ReadinessLabel ==
-      'Windows v1 automatic unlock intentionally unsupported');
-  assert(checklist['windowsV1Scope'] == 'observed');
+      'Windows Credential Provider component missing');
+  assert(checklist['windowsV1Scope'] == 'missing');
+  assert(windowsScope.label == 'Windows Credential Provider component');
   assert(windowsScope.required == true);
-  assert(windowsStep.status == 'ready');
+  assert(windowsStep.status == 'incomplete');
   assert(summary.requiredChecklistCount == 15);
-  assert(summary.completedRequiredChecklistCount == 1);
-  assert(!summary.missingRequiredChecklistLabels.contains('Windows v1 scope'));
+  assert(summary.completedRequiredChecklistCount == 0);
+  assert(summary.missingRequiredChecklistLabels
+      .contains('Windows Credential Provider component'));
 }
 
 void testStateExportsAcceptanceBundleJson() {

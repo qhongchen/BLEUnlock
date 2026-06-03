@@ -3,6 +3,9 @@ import 'dart:convert';
 import 'package:bleunlock_core/bleunlock_core.dart';
 import 'package:bleunlock_platform_interface/bleunlock_platform_interface.dart';
 
+const _windowsCredentialProviderMissingCapability =
+    'credential provider component is not installed';
+
 class DashboardSnapshot {
   const DashboardSnapshot({
     this.platformLabel = 'unknown',
@@ -67,21 +70,30 @@ class DashboardSnapshot {
   String get autoUnlockSecretLabel =>
       autoUnlockSecretConfigured ? 'configured' : 'missing';
 
-  bool get isWindowsPlatform => platformLabel.trim().toLowerCase() == 'windows';
+  bool get isWindowsPlatform => _isWindowsPlatformLabel(platformLabel);
 
   bool get isWindowsV1AutoUnlockUnsupported {
     return isWindowsPlatform &&
-        autoUnlockCapabilityLabel.trim().toLowerCase() == 'unsupported';
+        _isUnsupportedCapabilityLabel(autoUnlockCapabilityLabel);
+  }
+
+  bool get isWindowsCredentialProviderReady {
+    return isWindowsPlatform &&
+        _isSupportedCapabilityLabel(autoUnlockCapabilityLabel);
+  }
+
+  bool get isWindowsCredentialProviderMissing {
+    return isWindowsPlatform &&
+        _isWindowsCredentialProviderMissing(autoUnlockCapabilityLabel);
   }
 
   String? get windowsV1ReadinessLabel {
     if (!isWindowsPlatform) {
       return null;
     }
-    if (isWindowsV1AutoUnlockUnsupported) {
-      return 'Windows v1 automatic unlock intentionally unsupported';
-    }
-    return 'Windows automatic unlock capability changed; review v1 scope';
+    return _windowsCredentialProviderReadinessLabel(
+      autoUnlockCapabilityLabel,
+    );
   }
 
   Map<String, Object?> toDiagnosticJson() {
@@ -103,6 +115,8 @@ class DashboardSnapshot {
       'autoUnlockSecretEditable': autoUnlockSecretEditable,
       'autoUnlockPermissionSettingsAvailable':
           autoUnlockPermissionSettingsAvailable,
+      'isWindowsCredentialProviderReady': isWindowsCredentialProviderReady,
+      'isWindowsCredentialProviderMissing': isWindowsCredentialProviderMissing,
       if (windowsV1ReadinessLabel != null)
         'windowsV1ReadinessLabel': windowsV1ReadinessLabel,
     };
@@ -888,21 +902,30 @@ class AcceptanceSummary {
   final String autoUnlockCapabilityLabel;
   final List<DashboardLogEntry> _visibleLogs;
 
-  bool get isWindowsPlatform => platformLabel.trim().toLowerCase() == 'windows';
+  bool get isWindowsPlatform => _isWindowsPlatformLabel(platformLabel);
 
   bool get isWindowsV1AutoUnlockUnsupported {
     return isWindowsPlatform &&
-        autoUnlockCapabilityLabel.trim().toLowerCase() == 'unsupported';
+        _isUnsupportedCapabilityLabel(autoUnlockCapabilityLabel);
+  }
+
+  bool get isWindowsCredentialProviderReady {
+    return isWindowsPlatform &&
+        _isSupportedCapabilityLabel(autoUnlockCapabilityLabel);
+  }
+
+  bool get isWindowsCredentialProviderMissing {
+    return isWindowsPlatform &&
+        _isWindowsCredentialProviderMissing(autoUnlockCapabilityLabel);
   }
 
   String? get windowsV1ReadinessLabel {
     if (!isWindowsPlatform) {
       return null;
     }
-    if (isWindowsV1AutoUnlockUnsupported) {
-      return 'Windows v1 automatic unlock intentionally unsupported';
-    }
-    return 'Windows automatic unlock capability changed; review v1 scope';
+    return _windowsCredentialProviderReadinessLabel(
+      autoUnlockCapabilityLabel,
+    );
   }
 
   Map<String, Object?> toDiagnosticJson() {
@@ -932,6 +955,8 @@ class AcceptanceSummary {
       'platformLabel': platformLabel,
       'autoUnlockCapabilityLabel': autoUnlockCapabilityLabel,
       'isWindowsV1AutoUnlockUnsupported': isWindowsV1AutoUnlockUnsupported,
+      'isWindowsCredentialProviderReady': isWindowsCredentialProviderReady,
+      'isWindowsCredentialProviderMissing': isWindowsCredentialProviderMissing,
       if (windowsV1ReadinessLabel != null)
         'windowsV1ReadinessLabel': windowsV1ReadinessLabel,
       'requiredChecklistCount': requiredChecklistCount,
@@ -953,7 +978,9 @@ class AcceptanceSummary {
 
   List<AcceptanceChecklistItem> get checklistItems {
     final isAutoUnlockUnsupported =
-        autoUnlockCapabilityLabel.trim().toLowerCase() == 'unsupported';
+        _isUnsupportedCapabilityLabel(autoUnlockCapabilityLabel);
+    final requiresMacAutoUnlockEvidence =
+        !isWindowsPlatform && !isAutoUnlockUnsupported;
     final items = [
       AcceptanceChecklistItem(
         id: 'realBleScan',
@@ -1001,10 +1028,12 @@ class AcceptanceSummary {
       AcceptanceChecklistItem(
         id: 'macAutoUnlockAction',
         label: 'macOS auto unlock action',
-        status: isAutoUnlockUnsupported
-            ? 'unsupported'
-            : _evidenceLabel(hasAutoUnlockEvidence),
-        required: !isAutoUnlockUnsupported,
+        status: isWindowsPlatform
+            ? 'not required'
+            : isAutoUnlockUnsupported
+                ? 'unsupported'
+                : _evidenceLabel(hasAutoUnlockEvidence),
+        required: requiresMacAutoUnlockEvidence,
         evidence: _evidenceFor(_isAutoUnlockEvidence),
       ),
       AcceptanceChecklistItem(
@@ -1085,8 +1114,10 @@ class AcceptanceSummary {
         6,
         AcceptanceChecklistItem(
           id: 'windowsV1Scope',
-          label: 'Windows v1 scope',
-          status: isWindowsV1AutoUnlockUnsupported ? 'observed' : 'missing',
+          label: 'Windows Credential Provider component',
+          status: _windowsCredentialProviderChecklistStatus(
+            autoUnlockCapabilityLabel,
+          ),
           required: true,
           evidence: const [],
         ),
@@ -1136,7 +1167,7 @@ class AcceptanceSummary {
       if (isWindowsPlatform)
         _validationStep(
           id: 'windowsV1Scope',
-          label: 'Windows v1 scope',
+          label: 'Windows Credential Provider component',
           checklistIds: const [
             'windowsV1Scope',
           ],
@@ -1472,7 +1503,7 @@ String _runbookAction(String stepId) {
     case 'macAutoUnlock':
       return 'Validate macOS automatic unlock';
     case 'windowsV1Scope':
-      return 'Confirm Windows v1 automatic unlock boundary';
+      return 'Check Windows Credential Provider component';
     case 'trayMenu':
       return 'Use every tray menu action';
     case 'startupAtLogin':
@@ -1491,7 +1522,7 @@ String _runbookExpectedEvidence(String stepId) {
     case 'macAutoUnlock':
       return 'macOS auto unlock action';
     case 'windowsV1Scope':
-      return 'Windows automatic unlock unsupported by design';
+      return 'Windows Credential Provider component state';
     case 'trayMenu':
       return 'Tray open settings, start monitoring, pause monitoring, lock now, quit';
     case 'startupAtLogin':
@@ -1510,7 +1541,7 @@ String _runbookNextActionHint(String stepId, List<String> missingLabels) {
     case 'macAutoUnlock':
       return 'Enable macOS automatic unlock, grant Accessibility permission, save the password, lock the session, then bring the selected device close.';
     case 'windowsV1Scope':
-      return 'Keep Windows v1 focused on automatic lock, wake, tray, startup, and diagnostics; do not require automatic unlock evidence.';
+      return 'Install and register the Windows Credential Provider component before requiring Windows automatic unlock evidence.';
     case 'trayMenu':
       return _trayRunbookHint(missingLabels);
     case 'startupAtLogin':
@@ -2011,6 +2042,41 @@ String _shortPlatformId(String platformId) {
   }
   return '${platformId.substring(0, 8)}...'
       '${platformId.substring(platformId.length - 4)}';
+}
+
+bool _isWindowsPlatformLabel(String label) {
+  return label.trim().toLowerCase() == 'windows';
+}
+
+bool _isSupportedCapabilityLabel(String label) {
+  return label.trim().toLowerCase() == 'supported';
+}
+
+bool _isUnsupportedCapabilityLabel(String label) {
+  return label.trim().toLowerCase() == 'unsupported';
+}
+
+bool _isWindowsCredentialProviderMissing(String label) {
+  return label.trim().toLowerCase() ==
+      _windowsCredentialProviderMissingCapability;
+}
+
+String _windowsCredentialProviderReadinessLabel(String label) {
+  if (_isSupportedCapabilityLabel(label)) {
+    return 'Windows Credential Provider component ready';
+  }
+  if (_isWindowsCredentialProviderMissing(label) ||
+      _isUnsupportedCapabilityLabel(label)) {
+    return 'Windows Credential Provider component missing';
+  }
+  return 'Windows Credential Provider component pending';
+}
+
+String _windowsCredentialProviderChecklistStatus(String label) {
+  if (_isSupportedCapabilityLabel(label)) {
+    return 'ready';
+  }
+  return 'missing';
 }
 
 String _capabilityLabel(CapabilityStatus capability) {

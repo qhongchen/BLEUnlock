@@ -129,6 +129,8 @@ String zhChecklistStatus(String status) {
       return '已捕获';
     case 'unsupported':
       return '不支持';
+    case 'not required':
+      return '不要求';
     case 'none':
     case 'clear':
       return '无错误';
@@ -213,6 +215,7 @@ const Map<String, String> _exactLabels = {
   'unsupported': '不支持',
   'permission denied': '权限被拒绝',
   'temporarily unavailable': '暂时不可用',
+  'Credential Provider component is not installed': 'Credential Provider 组件未安装',
   'powered off': '蓝牙已关闭',
   'missing secret': '缺少密码',
   'stillLocked': '仍处于锁定状态',
@@ -320,11 +323,13 @@ const Map<String, String> _exactLabels = {
   'macOS auto unlock': 'macOS 自动解锁',
   'Tray menu': '托盘菜单',
   'Startup at login': '开机启动',
-  'Windows v1 scope': 'Windows v1 范围',
-  'Windows v1 automatic unlock intentionally unsupported':
-      'Windows v1 明确不支持自动解锁',
-  'Windows automatic unlock capability changed; review v1 scope':
-      'Windows 自动解锁能力已变化，请复核 v1 范围',
+  'Windows Credential Provider component': 'Windows Credential Provider 组件',
+  'Windows Credential Provider component ready':
+      'Windows Credential Provider 组件已就绪',
+  'Windows Credential Provider component missing':
+      'Windows Credential Provider 组件未安装',
+  'Windows Credential Provider component pending':
+      'Windows Credential Provider 组件待接入',
   'Windows build verification': 'Windows 构建验证',
   'Lock-screen scan continuity': '锁屏扫描连续性',
   'macOS Accessibility unlock': 'macOS 辅助功能解锁',
@@ -344,15 +349,15 @@ const Map<String, String> _exactLabels = {
   'Scan nearby selected BLE devices': '扫描附近已选择的 BLE 设备',
   'Trigger automatic lock and wake': '触发自动锁屏与唤醒',
   'Validate macOS automatic unlock': '验证 macOS 自动解锁',
-  'Confirm Windows v1 automatic unlock boundary':
-      '确认 Windows v1 自动解锁边界',
+  'Check Windows Credential Provider component':
+      '检查 Windows Credential Provider 组件',
   'Use every tray menu action': '使用每个托盘菜单动作',
   'Toggle startup at login': '切换开机启动',
   'Capture runtime evidence': '捕获运行证据',
   'Real BLE scan, locked scan, decision': '真实 BLE 扫描、锁屏扫描、距离判定',
   'Auto lock action, wake action': '自动锁屏动作、唤醒动作',
-  'Windows automatic unlock unsupported by design':
-      'Windows 自动解锁按设计不支持',
+  'Windows Credential Provider component state':
+      'Windows Credential Provider 组件状态',
   'Tray open settings, start monitoring, pause monitoring, lock now, quit':
       '托盘打开设置、开始监听、暂停监听、立即锁屏、退出',
   'Startup enable and disable actions': '开启和关闭开机启动动作',
@@ -363,8 +368,8 @@ const Map<String, String> _exactLabels = {
       '将已选择设备移远，直到记录自动锁屏日志；再将设备靠近以触发唤醒。',
   'Enable macOS automatic unlock, grant Accessibility permission, save the password, lock the session, then bring the selected device close.':
       '开启 macOS 自动解锁，授予辅助功能权限，保存密码，锁定会话后再将已选择设备靠近。',
-  'Keep Windows v1 focused on automatic lock, wake, tray, startup, and diagnostics; do not require automatic unlock evidence.':
-      'Windows v1 专注自动锁屏、唤醒、托盘、开机启动和诊断，不要求自动解锁证据。',
+  'Install and register the Windows Credential Provider component before requiring Windows automatic unlock evidence.':
+      '先安装并注册 Windows Credential Provider 组件，再要求 Windows 自动解锁证据。',
   'Use each missing tray menu item and confirm the action log appears.':
       '使用每个缺失的托盘菜单项，并确认对应动作日志出现。',
   'Toggle startup at login on and off, then confirm both startup change logs appear.':

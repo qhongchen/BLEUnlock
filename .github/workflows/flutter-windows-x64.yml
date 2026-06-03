@@ -1,0 +1,30 @@
+name: Flutter Windows x64
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows-x64:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Build Windows x64 release package
+        shell: pwsh
+        run: .\scripts\build-windows-x64.ps1
+
+      - name: Upload Windows x64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bleunlock_app-windows-x64
+          path: flutter/packages/bleunlock_app/build/windows/bleunlock_app-windows-x64.zip
+          if-no-files-found: error
+          retention-days: 14

@@ -1255,7 +1255,7 @@ Future<void> testCoordinatorSavesRuleAndSelectionChanges() async {
 
 Future<void>
     testCoordinatorRequiresAcknowledgementBeforeEnablingMacAutoUnlock() async {
-  final platform = MockBleunlockPlatform();
+  final platform = MockBleunlockPlatform(platformLabel: 'macOS');
   final coordinator = AppCoordinator(platform: platform);
 
   coordinator.updateConfig(
@@ -1455,6 +1455,7 @@ Future<void> testCoordinatorRetriesCapabilityCheckFromSystemAction() async {
 
 Future<void> testCoordinatorOpensMacAutoUnlockPermissionSettings() async {
   final platform = MockBleunlockPlatform(
+    platformLabel: 'macOS',
     unlockCapability: const CapabilityStatus.permissionDenied(
       'Accessibility permission is required',
     ),
@@ -1483,6 +1484,7 @@ Future<void> testCoordinatorOpensMacAutoUnlockPermissionSettings() async {
 Future<void>
     testCoordinatorAllowsPasswordEntryWhenUnlockSecretIsMissing() async {
   final platform = MockBleunlockPlatform(
+    platformLabel: 'macOS',
     unlockCapability: const CapabilityStatus.missingSecret(
       'Automatic unlock password is not configured',
     ),

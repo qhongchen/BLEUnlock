@@ -27,12 +27,20 @@ void main() {
     expect(platform, isNot(isA<MockBleunlockPlatform>()));
   });
 
-  test('keeps Windows automatic unlock unsupported in first version', () {
+  test('wires Windows automatic unlock through Credential Provider placeholder',
+      () {
     debugDefaultTargetPlatformOverride = TargetPlatform.windows;
 
     final platform = const DefaultBleunlockPlatformFactory().create();
 
     expect(platform.platformLabel, 'Windows');
-    expect(platform.unlock.capability.kind, CapabilityStatusKind.unsupported);
+    expect(
+      platform.unlock.capability.kind,
+      CapabilityStatusKind.temporarilyUnavailable,
+    );
+    expect(
+      platform.unlock.capability.description,
+      'Credential Provider component is not installed',
+    );
   });
 }

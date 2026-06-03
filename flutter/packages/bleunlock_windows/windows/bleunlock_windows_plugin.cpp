@@ -50,6 +50,8 @@ constexpr char kTrayMethodChannelName[] = "bleunlock_windows/tray_methods";
 constexpr char kTrayEventChannelName[] = "bleunlock_windows/tray_events";
 constexpr char kStartupMethodChannelName[] =
     "bleunlock_windows/startup_methods";
+constexpr char kUnlockMethodChannelName[] =
+    "bleunlock_windows/unlock_methods";
 constexpr wchar_t kCredentialTargetPrefix[] =
     L"com.github.skyearn.bleunlock.flutter/";
 constexpr wchar_t kStartupRunKey[] =
@@ -108,6 +110,22 @@ std::unordered_map<uint64_t, flutter::EncodableMap> g_last_scan_event_by_address
 int64_t CurrentTimeMillis() {
     const auto now = std::chrono::system_clock::now().time_since_epoch();
     return std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
+}
+
+void PulseUserInputForWake() {
+    INPUT input_events[2] = {};
+
+    input_events[0].type = INPUT_MOUSE;
+    input_events[0].mi.dx = 1;
+    input_events[0].mi.dy = 0;
+    input_events[0].mi.dwFlags = MOUSEEVENTF_MOVE;
+
+    input_events[1].type = INPUT_MOUSE;
+    input_events[1].mi.dx = -1;
+    input_events[1].mi.dy = 0;
+    input_events[1].mi.dwFlags = MOUSEEVENTF_MOVE;
+
+    SendInput(2, input_events, sizeof(INPUT));
 }
 
 std::string SessionKindFromWtsStatus(WPARAM status) {
@@ -294,6 +312,59 @@ bool IsUsefulDeviceName(const std::string &value) {
     return true;
 }
 
+struct NameCandidate {
+    std::string source;
+    std::string value;
+    bool accepted = false;
+};
+
+struct NameResolutionDiagnostics {
+    std::vector<NameCandidate> candidates;
+    std::string selected_name;
+    std::string selected_name_source;
+    std::string status = "pending";
+};
+
+void AddNameCandidate(NameResolutionDiagnostics &diagnostics,
+                      const std::string &source,
+                      const std::string &value) {
+    const auto trimmed = TrimAsciiWhitespace(value);
+    diagnostics.candidates.push_back(
+        {source, trimmed, IsUsefulDeviceName(trimmed)});
+    if (diagnostics.selected_name.empty() &&
+        diagnostics.candidates.back().accepted) {
+        diagnostics.selected_name = trimmed;
+        diagnostics.selected_name_source = source;
+        diagnostics.status = "resolved";
+    }
+}
+
+flutter::EncodableMap NameResolutionMap(
+    const NameResolutionDiagnostics &diagnostics) {
+    flutter::EncodableList candidates;
+    for (const auto &candidate : diagnostics.candidates) {
+        flutter::EncodableMap item;
+        item[flutter::EncodableValue("source")] =
+            flutter::EncodableValue(candidate.source);
+        item[flutter::EncodableValue("value")] =
+            flutter::EncodableValue(candidate.value);
+        item[flutter::EncodableValue("accepted")] =
+            flutter::EncodableValue(candidate.accepted);
+        candidates.emplace_back(flutter::EncodableValue(std::move(item)));
+    }
+
+    flutter::EncodableMap result;
+    result[flutter::EncodableValue("status")] =
+        flutter::EncodableValue(diagnostics.status);
+    result[flutter::EncodableValue("selectedName")] =
+        flutter::EncodableValue(diagnostics.selected_name);
+    result[flutter::EncodableValue("selectedNameSource")] =
+        flutter::EncodableValue(diagnostics.selected_name_source);
+    result[flutter::EncodableValue("candidates")] =
+        flutter::EncodableValue(std::move(candidates));
+    return result;
+}
+
 void EnsureWinrtApartment() {
     static thread_local bool attempted = false;
     if (attempted) {
@@ -400,8 +471,8 @@ void RememberLastScanEvent(uint64_t bluetooth_address,
 }
 
 void QueueResolvedDeviceNameEvent(uint64_t bluetooth_address,
-                                  const std::string &display_name) {
-    if (!IsUsefulDeviceName(display_name)) {
+                                  const NameResolutionDiagnostics &diagnostics) {
+    if (!IsUsefulDeviceName(diagnostics.selected_name)) {
         return;
     }
 
@@ -417,9 +488,21 @@ void QueueResolvedDeviceNameEvent(uint64_t bluetooth_address,
     }
 
     event[flutter::EncodableValue("displayName")] =
-        flutter::EncodableValue(TrimAsciiWhitespace(display_name));
+        flutter::EncodableValue(TrimAsciiWhitespace(diagnostics.selected_name));
     event[flutter::EncodableValue("seenAtMillis")] =
         flutter::EncodableValue(CurrentTimeMillis());
+    auto raw_advertisement_iterator =
+        event.find(flutter::EncodableValue("rawAdvertisement"));
+    if (raw_advertisement_iterator != event.end() &&
+        std::holds_alternative<flutter::EncodableMap>(
+            raw_advertisement_iterator->second)) {
+        auto raw_advertisement = std::get<flutter::EncodableMap>(
+            raw_advertisement_iterator->second);
+        raw_advertisement[flutter::EncodableValue("nameResolution")] =
+            flutter::EncodableValue(NameResolutionMap(diagnostics));
+        raw_advertisement_iterator->second =
+            flutter::EncodableValue(std::move(raw_advertisement));
+    }
 
     std::lock_guard<std::mutex> lock(g_plugin_instance_mutex);
     auto *plugin = g_plugin_instance;
@@ -428,9 +511,10 @@ void QueueResolvedDeviceNameEvent(uint64_t bluetooth_address,
     }
 }
 
-std::string ResolveDeviceNameFromBluetoothAddress(
+NameResolutionDiagnostics ResolveDeviceNameFromBluetoothAddress(
     uint64_t bluetooth_address,
     BluetoothAddressType address_type) {
+    NameResolutionDiagnostics diagnostics;
     try {
         EnsureWinrtApartment();
         auto async_operation =
@@ -441,16 +525,27 @@ std::string ResolveDeviceNameFromBluetoothAddress(
                       bluetooth_address, address_type);
         const auto device = async_operation.get();
         if (!device) {
-            return "";
+            diagnostics.status = "deviceNotFound";
+            return diagnostics;
         }
 
-        std::vector<std::string> candidates = {winrt::to_string(device.Name())};
+        AddNameCandidate(diagnostics, "BluetoothLEDevice.Name",
+                         winrt::to_string(device.Name()));
         const auto direct_device_information =
             device.DeviceInformation();
-        const auto direct_candidates =
-            DeviceInformationNameCandidates(direct_device_information);
-        candidates.insert(candidates.end(), direct_candidates.begin(),
-                          direct_candidates.end());
+        const auto direct_candidates = DeviceInformationNameCandidates(
+            direct_device_information);
+        constexpr const char *direct_sources[] = {
+            "DeviceInformation.Name",
+            "DeviceInformation.System.ItemNameDisplay",
+            "DeviceInformation.System.Devices.Name",
+            "DeviceInformation.System.Devices.FriendlyName",
+            "DeviceInformation.System.Devices.ModelName",
+        };
+        for (size_t index = 0; index < direct_candidates.size(); ++index) {
+            AddNameCandidate(diagnostics, direct_sources[index],
+                             direct_candidates[index]);
+        }
         try {
             const auto refreshed_device_information =
                 DeviceInformation::CreateFromIdAsync(
@@ -461,14 +556,22 @@ std::string ResolveDeviceNameFromBluetoothAddress(
                     .get();
             const auto refreshed_candidates =
                 DeviceInformationNameCandidates(refreshed_device_information);
-            candidates.insert(candidates.end(), refreshed_candidates.begin(),
-                              refreshed_candidates.end());
-        } catch (...) {
-        }
-        for (const auto &candidate : candidates) {
-            if (IsUsefulDeviceName(candidate)) {
-                return TrimAsciiWhitespace(candidate);
+            constexpr const char *refreshed_sources[] = {
+                "RefreshedDeviceInformation.Name",
+                "RefreshedDeviceInformation.System.ItemNameDisplay",
+                "RefreshedDeviceInformation.System.Devices.Name",
+                "RefreshedDeviceInformation.System.Devices.FriendlyName",
+                "RefreshedDeviceInformation.System.Devices.ModelName",
+            };
+            for (size_t index = 0; index < refreshed_candidates.size(); ++index) {
+                AddNameCandidate(diagnostics, refreshed_sources[index],
+                                 refreshed_candidates[index]);
             }
+        } catch (...) {
+            AddNameCandidate(diagnostics, "RefreshedDeviceInformation.Error", "");
+        }
+        if (HasText(diagnostics.selected_name)) {
+            return diagnostics;
         }
 
         const auto gatt_services =
@@ -477,7 +580,9 @@ std::string ResolveDeviceNameFromBluetoothAddress(
                       BluetoothCacheMode::Uncached)
                 .get();
         if (gatt_services.Status() != GattCommunicationStatus::Success) {
-            return "";
+            AddNameCandidate(diagnostics, "GattDeviceName", "");
+            diagnostics.status = "notResolved";
+            return diagnostics;
         }
 
         for (const auto &service : gatt_services.Services()) {
@@ -510,26 +615,29 @@ std::string ResolveDeviceNameFromBluetoothAddress(
                 reader.ReadBytes(winrt::array_view<uint8_t>(bytes));
                 const auto candidate =
                     std::string(bytes.begin(), bytes.end());
-                if (IsUsefulDeviceName(candidate)) {
-                    return TrimAsciiWhitespace(candidate);
+                AddNameCandidate(diagnostics, "GattDeviceName", candidate);
+                if (HasText(diagnostics.selected_name)) {
+                    return diagnostics;
                 }
             }
         }
-        return "";
+        diagnostics.status = "notResolved";
+        return diagnostics;
     } catch (...) {
-        return "";
+        diagnostics.status = "error";
+        return diagnostics;
     }
 }
 
 void ScheduleDeviceNameResolution(uint64_t bluetooth_address,
                                   BluetoothAddressType address_type) {
     std::thread([bluetooth_address, address_type]() {
-        const auto display_name =
+        const auto diagnostics =
             ResolveDeviceNameFromBluetoothAddress(
                 bluetooth_address, address_type);
-        if (HasText(display_name)) {
-            CacheDeviceName(bluetooth_address, display_name);
-            QueueResolvedDeviceNameEvent(bluetooth_address, display_name);
+        if (HasText(diagnostics.selected_name)) {
+            CacheDeviceName(bluetooth_address, diagnostics.selected_name);
+            QueueResolvedDeviceNameEvent(bluetooth_address, diagnostics);
         }
     }).detach();
 }
@@ -538,22 +646,32 @@ std::string DisplayNameForAdvertisement(
     uint64_t bluetooth_address,
     BluetoothAddressType address_type,
     const BluetoothLEAdvertisement &advertisement,
-    int64_t now_millis) {
+    int64_t now_millis,
+    NameResolutionDiagnostics *diagnostics) {
     auto display_name = winrt::to_string(advertisement.LocalName());
-    if (IsUsefulDeviceName(display_name)) {
+    AddNameCandidate(*diagnostics, "advertisement.LocalName", display_name);
+    if (HasText(diagnostics->selected_name)) {
+        display_name = diagnostics->selected_name;
         CacheDeviceName(bluetooth_address, display_name);
         return TrimAsciiWhitespace(display_name);
     }
 
     display_name = CachedDeviceName(bluetooth_address);
-    if (HasText(display_name)) {
-        return display_name;
+    AddNameCandidate(*diagnostics, "cache", display_name);
+    if (HasText(diagnostics->selected_name)) {
+        return diagnostics->selected_name;
     }
 
     if (!ShouldResolveDeviceName(bluetooth_address, now_millis)) {
+        if (diagnostics->status == "pending") {
+            diagnostics->status = "rateLimited";
+        }
         return "";
     }
 
+    if (diagnostics->status == "pending") {
+        diagnostics->status = "scheduled";
+    }
     ScheduleDeviceNameResolution(bluetooth_address, address_type);
     return "";
 }
@@ -633,7 +751,8 @@ flutter::EncodableMap RawAdvertisementMap(
     const std::string &address,
     const std::string &address_hint,
     int64_t seen_at_millis,
-    const flutter::EncodableList &manufacturer_data) {
+    const flutter::EncodableList &manufacturer_data,
+    const NameResolutionDiagnostics &name_resolution) {
     const auto advertisement = args.Advertisement();
 
     flutter::EncodableMap result;
@@ -662,6 +781,8 @@ flutter::EncodableMap RawAdvertisementMap(
         flutter::EncodableValue(AdvertisementDataSections(advertisement));
     result[flutter::EncodableValue("serviceUuids")] =
         flutter::EncodableValue(ServiceUuids(advertisement));
+    result[flutter::EncodableValue("nameResolution")] =
+        flutter::EncodableValue(NameResolutionMap(name_resolution));
     return result;
 }
 
@@ -673,8 +794,10 @@ flutter::EncodableMap ScanEventFromAdvertisement(
     const auto address = FormatBluetoothAddress(bluetooth_address);
     const auto address_hint = FormatBluetoothAddressHint(bluetooth_address);
     const auto advertisement = args.Advertisement();
+    NameResolutionDiagnostics name_resolution;
     const auto display_name = DisplayNameForAdvertisement(
-        bluetooth_address, bluetooth_address_type, advertisement, now_millis);
+        bluetooth_address, bluetooth_address_type, advertisement, now_millis,
+        &name_resolution);
     const auto manufacturer_data = ManufacturerDataBytes(advertisement);
 
     flutter::EncodableMap event;
@@ -694,7 +817,8 @@ flutter::EncodableMap ScanEventFromAdvertisement(
         flutter::EncodableValue(manufacturer_data);
     event[flutter::EncodableValue("rawAdvertisement")] =
         flutter::EncodableValue(RawAdvertisementMap(
-            args, address, address_hint, now_millis, manufacturer_data));
+            args, address, address_hint, now_millis, manufacturer_data,
+            name_resolution));
     RememberLastScanEvent(bluetooth_address, event);
     return event;
 }
@@ -825,6 +949,15 @@ flutter::EncodableValue CapabilityMap(const char *kind,
     return flutter::EncodableValue(value);
 }
 
+flutter::EncodableValue UnlockResultMap(bool success, const char *reason) {
+    flutter::EncodableMap value;
+    value[flutter::EncodableValue("success")] =
+        flutter::EncodableValue(success);
+    value[flutter::EncodableValue("reason")] =
+        flutter::EncodableValue(reason);
+    return flutter::EncodableValue(value);
+}
+
 LRESULT CALLBACK PluginWindowProc(HWND hwnd,
                                   UINT message,
                                   WPARAM wparam,
@@ -904,6 +1037,10 @@ void BleunlockWindowsPlugin::RegisterWithRegistrar(
         std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
             registrar->messenger(), kStartupMethodChannelName, &flutter::StandardMethodCodec::GetInstance());
 
+    auto unlock_method_channel =
+        std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+            registrar->messenger(), kUnlockMethodChannelName, &flutter::StandardMethodCodec::GetInstance());
+
     auto plugin = std::make_unique<BleunlockWindowsPlugin>();
     auto *view = registrar->GetView();
     plugin->registrar_window_ =
@@ -944,6 +1081,11 @@ void BleunlockWindowsPlugin::RegisterWithRegistrar(
             auto result) { plugin_pointer->HandleMethodCall(call, std::move(result)); });
 
     startup_method_channel->SetMethodCallHandler(
+        [plugin_pointer = plugin.get()](
+            const auto &call,
+            auto result) { plugin_pointer->HandleMethodCall(call, std::move(result)); });
+
+    unlock_method_channel->SetMethodCallHandler(
         [plugin_pointer = plugin.get()](
             const auto &call,
             auto result) { plugin_pointer->HandleMethodCall(call, std::move(result)); });
@@ -1121,6 +1263,22 @@ void BleunlockWindowsPlugin::HandleMethodCall(
         return;
     }
 
+    if (method_call.method_name() == "getUnlockCapability") {
+        result->Success(GetUnlockCapability());
+        return;
+    }
+
+    if (method_call.method_name() == "openUnlockSettings") {
+        OpenUnlockSettings();
+        result->Success();
+        return;
+    }
+
+    if (method_call.method_name() == "unlock") {
+        result->Success(UnlockWithCredentialProvider());
+        return;
+    }
+
     if (method_call.method_name() == "writeSecret") {
         const auto *arguments = ArgumentsMap(method_call.arguments());
         std::string key;
@@ -1283,6 +1441,22 @@ flutter::EncodableValue BleunlockWindowsPlugin::GetScannerCapability() {
     }
 }
 
+flutter::EncodableValue BleunlockWindowsPlugin::GetUnlockCapability() const {
+    return CapabilityMap(
+        "temporarilyUnavailable",
+        "Credential Provider component is not installed");
+}
+
+flutter::EncodableValue
+BleunlockWindowsPlugin::UnlockWithCredentialProvider() const {
+    return UnlockResultMap(false, "credentialProviderMissing");
+}
+
+void BleunlockWindowsPlugin::OpenUnlockSettings() const {
+    ShellExecuteW(nullptr, L"open", L"ms-settings:signinoptions", nullptr,
+                  nullptr, SW_SHOWNORMAL);
+}
+
 void BleunlockWindowsPlugin::QueueScanEvent(flutter::EncodableMap event) {
     {
         std::lock_guard<std::mutex> lock(pending_scan_events_mutex_);
@@ -1322,6 +1496,10 @@ bool BleunlockWindowsPlugin::Lock(DWORD *error_code) {
 void BleunlockWindowsPlugin::WakeDisplay() {
     SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED |
                             ES_DISPLAY_REQUIRED);
+    SendMessageTimeoutW(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER,
+                        static_cast<LPARAM>(-1), SMTO_ABORTIFHUNG, 100,
+                        nullptr);
+    PulseUserInputForWake();
     SetThreadExecutionState(ES_CONTINUOUS);
 }
 

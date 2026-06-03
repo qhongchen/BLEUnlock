@@ -493,7 +493,7 @@ class _ValidationSectionState extends State<ValidationSection> {
   }
 
   ExternalValidationGateSet get _activeExternalValidationGates {
-    if (widget.state.snapshot.isWindowsV1AutoUnlockUnsupported) {
+    if (widget.state.snapshot.isWindowsPlatform) {
       return defaultExternalValidationGates.withoutGate(
         'macAccessibilityUnlock',
       );
@@ -667,8 +667,8 @@ class _AcceptanceReadinessSummary extends StatelessWidget {
             if (summary.windowsV1ReadinessLabel != null)
               StatusPill(
                 label: zhDisplayText(summary.windowsV1ReadinessLabel!),
-                icon: summary.isWindowsV1AutoUnlockUnsupported
-                    ? Icons.block
+                icon: summary.isWindowsCredentialProviderReady
+                    ? Icons.verified_outlined
                     : Icons.warning_amber_outlined,
               ),
           ],
