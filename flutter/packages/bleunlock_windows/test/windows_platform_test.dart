@@ -13,8 +13,8 @@ Future<void> main() async {
   await testWindowsNativeReportsLockFailuresToDart();
   await testWindowsNativeTrayUsesAppWindowIcon();
   await testWindowsNativeTrayMenuUsesMonitoringState();
-  await testWindowsNativeCachesAndResolvesDeviceNames();
-  await testWindowsNativeUsesActiveBleScanningForNames();
+  await testWindowsNativeKeepsPermanentScanPathLightweight();
+  await testWindowsNativeUsesPassiveBleScanningByDefault();
   await testWindowsNativeFormatsAddressHintForDiagnostics();
   await testWindowsNativeExportsRawAdvertisementDiagnostics();
   await testWindowsPlatformReportsCredentialProviderPlaceholder();
@@ -96,54 +96,43 @@ Future<void> testWindowsNativeTrayUsesAppWindowIcon() async {
   ));
 }
 
-Future<void> testWindowsNativeCachesAndResolvesDeviceNames() async {
+Future<void> testWindowsNativeKeepsPermanentScanPathLightweight() async {
   const sourcePath =
       'flutter/packages/bleunlock_windows/windows/bleunlock_windows_plugin.cpp';
   final source = File(sourcePath).readAsStringSync();
 
-  assert(source.contains('g_device_name_cache'));
-  assert(source.contains('BluetoothLEDevice::FromBluetoothAddressAsync'));
-  assert(source.contains('DeviceInformationNameCandidates'));
-  assert(source.contains('device.DeviceInformation()'));
-  assert(source.contains('DeviceInformation::CreateFromIdAsync'));
-  assert(source.contains('System.ItemNameDisplay'));
-  assert(source.contains('System.Devices.FriendlyName'));
-  assert(source.contains('BluetoothAddressType::Unspecified'));
+  assert(source.contains('BluetoothLEScanningMode::Passive'));
+  assert(!source.contains('BluetoothLEScanningMode::Active'));
+  assert(!source.contains('BluetoothLEDevice::FromBluetoothAddressAsync'));
+  assert(!source.contains('DeviceInformation::CreateFromIdAsync'));
+  assert(!source.contains('GetGattServicesForUuidAsync'));
+  assert(!source.contains('GattDeviceName'));
+  assert(!source.contains('ReadValueAsync'));
+  assert(!source.contains('std::thread('));
+  assert(!source.contains('ScheduleDeviceNameResolution'));
+  assert(!source.contains('g_device_name_cache'));
+  assert(!source.contains('g_last_scan_event_by_address'));
+  assert(!source.contains('nameResolution'));
   assert(source.contains('args.BluetoothAddressType()'));
-  assert(source.contains('GattServiceUuids::GenericAccess()'));
-  assert(source.contains('GattCharacteristicUuids::GapDeviceName()'));
-  assert(source.contains('ReadValueAsync'));
-  assert(source.contains('BluetoothCacheMode::Uncached'));
-  assert(source.contains('g_last_scan_event_by_address'));
-  assert(source.contains('QueueResolvedDeviceNameEvent'));
-  assert(source.contains('NameResolutionDiagnostics'));
-  assert(source.contains('nameResolution'));
-  assert(source.contains('selectedNameSource'));
-  assert(source.contains('advertisement.LocalName'));
-  assert(source.contains('BluetoothLEDevice.Name'));
-  assert(source.contains('DeviceInformation.Name'));
-  assert(source.contains('GattDeviceName'));
-  assert(source.contains('DisplayNameForAdvertisement'));
-  assert(source.contains('IsUsefulDeviceName'));
-  assert(source.contains('LooksLikeAddressName'));
-  assert(source.contains('ScheduleDeviceNameResolution(bluetooth_address,'));
-  assert(source.contains('CacheDeviceName(bluetooth_address, display_name);'));
-  assert(source.contains('CachedDeviceName(bluetooth_address)'));
-  assert(source.contains('ShouldResolveDeviceName(bluetooth_address,'));
+  assert(source.contains('advertisement.LocalName()'));
   assert(source.contains('if (HasText(display_name))'));
-  assert(source.contains('RememberLastScanEvent(bluetooth_address, event);'));
   assert(source.contains(
     'event[flutter::EncodableValue("displayName")] =',
   ));
 }
 
-Future<void> testWindowsNativeUsesActiveBleScanningForNames() async {
+Future<void> testWindowsNativeUsesPassiveBleScanningByDefault() async {
   const sourcePath =
       'flutter/packages/bleunlock_windows/windows/bleunlock_windows_plugin.cpp';
   final source = File(sourcePath).readAsStringSync();
 
-  assert(source.contains('BluetoothLEScanningMode::Active'));
-  assert(!source.contains('ScanningMode(BluetoothLEScanningMode::Passive);'));
+  assert(source.contains('BluetoothLEScanningMode::Passive'));
+  assert(!source.contains('ScanningMode(BluetoothLEScanningMode::Active);'));
+  assert(source.contains(
+    'ble_watcher_->watcher.Received(ble_watcher_->received_token);',
+  ));
+  assert(source.contains('ble_watcher_->received_token = {};'));
+  assert(source.contains('ble_watcher_->watcher = nullptr;'));
 }
 
 Future<void> testWindowsNativeFormatsAddressHintForDiagnostics() async {
@@ -174,8 +163,8 @@ Future<void> testWindowsNativeExportsRawAdvertisementDiagnostics() async {
   assert(source.contains('"manufacturerDataSections"'));
   assert(source.contains('"dataSections"'));
   assert(source.contains('"serviceUuids"'));
-  assert(source.contains('"nameResolution"'));
-  assert(source.contains('NameResolutionMap(name_resolution)'));
+  assert(!source.contains('"nameResolution"'));
+  assert(!source.contains('NameResolutionMap('));
 }
 
 Future<void> testWindowsNativeTrayMenuUsesMonitoringState() async {
@@ -297,22 +286,6 @@ Future<void> testWindowsScannerMapsNativeAdvertisementEvents() async {
             },
           ],
           'serviceUuids': ['0000180f-0000-1000-8000-00805f9b34fb'],
-          'nameResolution': {
-            'selectedName': 'Xiaomi Smart Band',
-            'selectedNameSource': 'advertisement.LocalName',
-            'candidates': [
-              {
-                'source': 'advertisement.LocalName',
-                'value': 'Xiaomi Smart Band',
-                'accepted': true,
-              },
-              {
-                'source': 'BluetoothLEDevice.Name',
-                'value': 'NGN3pBIhPPbdrMUliuytgV2g',
-                'accepted': false,
-              },
-            ],
-          },
         },
       },
     ]),
@@ -340,12 +313,7 @@ Future<void> testWindowsScannerMapsNativeAdvertisementEvents() async {
             .single as Map)['payloadHex'] ==
         '4C001005',
   );
-  final nameResolution = event.rawAdvertisement?['nameResolution'] as Map;
-  assert(nameResolution['selectedNameSource'] == 'advertisement.LocalName');
-  assert(
-    ((nameResolution['candidates'] as List<Object?>).last as Map)['source'] ==
-        'BluetoothLEDevice.Name',
-  );
+  assert(!event.rawAdvertisement!.containsKey('nameResolution'));
 
   await scanner.stopScan();
   assert(bridge.stopped);

@@ -7,28 +7,20 @@
 #include <flutter/plugin_registrar_windows.h>
 #include <flutter/standard_method_codec.h>
 
-#include <algorithm>
-#include <cctype>
 #include <chrono>
-#include <cstring>
 #include <iomanip>
 #include <memory>
 #include <mutex>
 #include <shellapi.h>
 #include <sstream>
 #include <string>
-#include <thread>
-#include <unordered_map>
 #include <variant>
 #include <vector>
 #include <wincred.h>
 #include <windows.h>
 #include <winrt/Windows.Devices.Bluetooth.h>
 #include <winrt/Windows.Devices.Bluetooth.Advertisement.h>
-#include <winrt/Windows.Devices.Bluetooth.GenericAttributeProfile.h>
-#include <winrt/Windows.Devices.Enumeration.h>
 #include <winrt/Windows.Foundation.h>
-#include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Storage.Streams.h>
 #include <winrt/base.h>
 #include <wtsapi32.h>
@@ -65,20 +57,9 @@ constexpr UINT kTrayCommandStartMonitoring = 1002;
 constexpr UINT kTrayCommandPauseMonitoring = 1003;
 constexpr UINT kTrayCommandLockNow = 1004;
 constexpr UINT kTrayCommandQuit = 1005;
-constexpr int64_t kDeviceNameLookupRetryMillis = 30000;
 
 using EventSink = flutter::EventSink<flutter::EncodableValue>;
-using BluetoothLEDevice = winrt::Windows::Devices::Bluetooth::BluetoothLEDevice;
 using BluetoothAddressType = winrt::Windows::Devices::Bluetooth::BluetoothAddressType;
-using BluetoothCacheMode =
-    winrt::Windows::Devices::Bluetooth::BluetoothCacheMode;
-using GattCharacteristicUuids = winrt::Windows::Devices::Bluetooth::
-    GenericAttributeProfile::GattCharacteristicUuids;
-using GattCommunicationStatus = winrt::Windows::Devices::Bluetooth::
-    GenericAttributeProfile::GattCommunicationStatus;
-using DeviceInformation = winrt::Windows::Devices::Enumeration::DeviceInformation;
-using GattServiceUuids = winrt::Windows::Devices::Bluetooth::
-    GenericAttributeProfile::GattServiceUuids;
 using BluetoothLEAdvertisement = winrt::Windows::Devices::Bluetooth::
     Advertisement::BluetoothLEAdvertisement;
 using BluetoothLEAdvertisementReceivedEventArgs = winrt::Windows::Devices::
@@ -101,11 +82,6 @@ std::unique_ptr<EventSink> g_session_event_sink;
 std::unique_ptr<EventSink> g_tray_event_sink;
 BleunlockWindowsPlugin *g_plugin_instance = nullptr;
 std::mutex g_plugin_instance_mutex;
-std::mutex g_device_name_cache_mutex;
-std::mutex g_last_scan_event_mutex;
-std::unordered_map<uint64_t, std::string> g_device_name_cache;
-std::unordered_map<uint64_t, int64_t> g_device_name_lookup_at;
-std::unordered_map<uint64_t, flutter::EncodableMap> g_last_scan_event_by_address;
 
 int64_t CurrentTimeMillis() {
     const auto now = std::chrono::system_clock::now().time_since_epoch();
@@ -273,98 +249,6 @@ std::string TrimAsciiWhitespace(const std::string &value) {
     return value.substr(first, last - first + 1);
 }
 
-std::string LowercaseAscii(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
-        return static_cast<char>(std::tolower(c));
-    });
-    return value;
-}
-
-bool LooksLikeAddressName(const std::string &value) {
-    if (value.size() != 17) {
-        return false;
-    }
-
-    for (size_t index = 0; index < value.size(); ++index) {
-        if ((index + 1) % 3 == 0) {
-            if (value[index] != ':') {
-                return false;
-            }
-        } else if (!std::isxdigit(static_cast<unsigned char>(value[index]))) {
-            return false;
-        }
-    }
-    return true;
-}
-
-bool IsUsefulDeviceName(const std::string &value) {
-    const auto name = TrimAsciiWhitespace(value);
-    if (!HasText(name)) {
-        return false;
-    }
-
-    const auto lowercase = LowercaseAscii(name);
-    constexpr char kBluetoothPrefix[] = "bluetooth ";
-    if (lowercase.rfind(kBluetoothPrefix, 0) == 0 &&
-        LooksLikeAddressName(lowercase.substr(strlen(kBluetoothPrefix)))) {
-        return false;
-    }
-    return true;
-}
-
-struct NameCandidate {
-    std::string source;
-    std::string value;
-    bool accepted = false;
-};
-
-struct NameResolutionDiagnostics {
-    std::vector<NameCandidate> candidates;
-    std::string selected_name;
-    std::string selected_name_source;
-    std::string status = "pending";
-};
-
-void AddNameCandidate(NameResolutionDiagnostics &diagnostics,
-                      const std::string &source,
-                      const std::string &value) {
-    const auto trimmed = TrimAsciiWhitespace(value);
-    diagnostics.candidates.push_back(
-        {source, trimmed, IsUsefulDeviceName(trimmed)});
-    if (diagnostics.selected_name.empty() &&
-        diagnostics.candidates.back().accepted) {
-        diagnostics.selected_name = trimmed;
-        diagnostics.selected_name_source = source;
-        diagnostics.status = "resolved";
-    }
-}
-
-flutter::EncodableMap NameResolutionMap(
-    const NameResolutionDiagnostics &diagnostics) {
-    flutter::EncodableList candidates;
-    for (const auto &candidate : diagnostics.candidates) {
-        flutter::EncodableMap item;
-        item[flutter::EncodableValue("source")] =
-            flutter::EncodableValue(candidate.source);
-        item[flutter::EncodableValue("value")] =
-            flutter::EncodableValue(candidate.value);
-        item[flutter::EncodableValue("accepted")] =
-            flutter::EncodableValue(candidate.accepted);
-        candidates.emplace_back(flutter::EncodableValue(std::move(item)));
-    }
-
-    flutter::EncodableMap result;
-    result[flutter::EncodableValue("status")] =
-        flutter::EncodableValue(diagnostics.status);
-    result[flutter::EncodableValue("selectedName")] =
-        flutter::EncodableValue(diagnostics.selected_name);
-    result[flutter::EncodableValue("selectedNameSource")] =
-        flutter::EncodableValue(diagnostics.selected_name_source);
-    result[flutter::EncodableValue("candidates")] =
-        flutter::EncodableValue(std::move(candidates));
-    return result;
-}
-
 void EnsureWinrtApartment() {
     static thread_local bool attempted = false;
     if (attempted) {
@@ -377,303 +261,6 @@ void EnsureWinrtApartment() {
     } catch (...) {
         // Flutter may already initialize COM for the current thread.
     }
-}
-
-void CacheDeviceName(uint64_t bluetooth_address, const std::string &name) {
-    if (!IsUsefulDeviceName(name)) {
-        return;
-    }
-
-    std::lock_guard<std::mutex> lock(g_device_name_cache_mutex);
-    g_device_name_cache[bluetooth_address] = TrimAsciiWhitespace(name);
-}
-
-std::string CachedDeviceName(uint64_t bluetooth_address) {
-    std::lock_guard<std::mutex> lock(g_device_name_cache_mutex);
-    const auto iterator = g_device_name_cache.find(bluetooth_address);
-    return iterator == g_device_name_cache.end() ? "" : iterator->second;
-}
-
-bool ShouldResolveDeviceName(uint64_t bluetooth_address, int64_t now_millis) {
-    std::lock_guard<std::mutex> lock(g_device_name_cache_mutex);
-    if (g_device_name_cache.find(bluetooth_address) !=
-        g_device_name_cache.end()) {
-        return false;
-    }
-
-    const auto iterator = g_device_name_lookup_at.find(bluetooth_address);
-    if (iterator != g_device_name_lookup_at.end() &&
-        now_millis - iterator->second < kDeviceNameLookupRetryMillis) {
-        return false;
-    }
-
-    g_device_name_lookup_at[bluetooth_address] = now_millis;
-    return true;
-}
-
-winrt::Windows::Foundation::Collections::IVector<winrt::hstring>
-DeviceNamePropertyKeys() {
-    auto keys = winrt::single_threaded_vector<winrt::hstring>();
-    keys.Append(L"System.ItemNameDisplay");
-    keys.Append(L"System.Devices.Name");
-    keys.Append(L"System.Devices.FriendlyName");
-    keys.Append(L"System.Devices.ModelName");
-    return keys;
-}
-
-std::string DeviceInformationPropertyString(
-    const DeviceInformation &device_information,
-    const wchar_t *property_key) {
-    const auto properties = device_information.Properties();
-    try {
-        const auto key = winrt::hstring(property_key);
-        if (!properties.HasKey(key)) {
-            return "";
-        }
-
-        const auto value = properties.Lookup(key)
-                               .try_as<winrt::Windows::Foundation::IPropertyValue>();
-        if (!value) {
-            return "";
-        }
-        if (value.Type() != winrt::Windows::Foundation::PropertyType::String) {
-            return "";
-        }
-        return winrt::to_string(value.GetString());
-    } catch (...) {
-        return "";
-    }
-}
-
-std::vector<std::string> DeviceInformationNameCandidates(
-    const DeviceInformation &device_information) {
-    if (!device_information) {
-        return {};
-    }
-
-    return {
-        winrt::to_string(device_information.Name()),
-        DeviceInformationPropertyString(device_information,
-                                        L"System.ItemNameDisplay"),
-        DeviceInformationPropertyString(device_information,
-                                        L"System.Devices.Name"),
-        DeviceInformationPropertyString(device_information,
-                                        L"System.Devices.FriendlyName"),
-        DeviceInformationPropertyString(device_information,
-                                        L"System.Devices.ModelName"),
-    };
-}
-
-void RememberLastScanEvent(uint64_t bluetooth_address,
-                           const flutter::EncodableMap &event) {
-    std::lock_guard<std::mutex> lock(g_last_scan_event_mutex);
-    g_last_scan_event_by_address[bluetooth_address] = event;
-}
-
-void QueueResolvedDeviceNameEvent(uint64_t bluetooth_address,
-                                  const NameResolutionDiagnostics &diagnostics) {
-    if (!IsUsefulDeviceName(diagnostics.selected_name)) {
-        return;
-    }
-
-    flutter::EncodableMap event;
-    {
-        std::lock_guard<std::mutex> lock(g_last_scan_event_mutex);
-        const auto iterator =
-            g_last_scan_event_by_address.find(bluetooth_address);
-        if (iterator == g_last_scan_event_by_address.end()) {
-            return;
-        }
-        event = iterator->second;
-    }
-
-    event[flutter::EncodableValue("displayName")] =
-        flutter::EncodableValue(TrimAsciiWhitespace(diagnostics.selected_name));
-    event[flutter::EncodableValue("seenAtMillis")] =
-        flutter::EncodableValue(CurrentTimeMillis());
-    auto raw_advertisement_iterator =
-        event.find(flutter::EncodableValue("rawAdvertisement"));
-    if (raw_advertisement_iterator != event.end() &&
-        std::holds_alternative<flutter::EncodableMap>(
-            raw_advertisement_iterator->second)) {
-        auto raw_advertisement = std::get<flutter::EncodableMap>(
-            raw_advertisement_iterator->second);
-        raw_advertisement[flutter::EncodableValue("nameResolution")] =
-            flutter::EncodableValue(NameResolutionMap(diagnostics));
-        raw_advertisement_iterator->second =
-            flutter::EncodableValue(std::move(raw_advertisement));
-    }
-
-    std::lock_guard<std::mutex> lock(g_plugin_instance_mutex);
-    auto *plugin = g_plugin_instance;
-    if (plugin != nullptr) {
-        plugin->QueueScanEvent(std::move(event));
-    }
-}
-
-NameResolutionDiagnostics ResolveDeviceNameFromBluetoothAddress(
-    uint64_t bluetooth_address,
-    BluetoothAddressType address_type) {
-    NameResolutionDiagnostics diagnostics;
-    try {
-        EnsureWinrtApartment();
-        auto async_operation =
-            address_type == BluetoothAddressType::Unspecified
-                ? BluetoothLEDevice::FromBluetoothAddressAsync(
-                      bluetooth_address)
-                : BluetoothLEDevice::FromBluetoothAddressAsync(
-                      bluetooth_address, address_type);
-        const auto device = async_operation.get();
-        if (!device) {
-            diagnostics.status = "deviceNotFound";
-            return diagnostics;
-        }
-
-        AddNameCandidate(diagnostics, "BluetoothLEDevice.Name",
-                         winrt::to_string(device.Name()));
-        const auto direct_device_information =
-            device.DeviceInformation();
-        const auto direct_candidates = DeviceInformationNameCandidates(
-            direct_device_information);
-        constexpr const char *direct_sources[] = {
-            "DeviceInformation.Name",
-            "DeviceInformation.System.ItemNameDisplay",
-            "DeviceInformation.System.Devices.Name",
-            "DeviceInformation.System.Devices.FriendlyName",
-            "DeviceInformation.System.Devices.ModelName",
-        };
-        for (size_t index = 0; index < direct_candidates.size(); ++index) {
-            AddNameCandidate(diagnostics, direct_sources[index],
-                             direct_candidates[index]);
-        }
-        try {
-            const auto refreshed_device_information =
-                DeviceInformation::CreateFromIdAsync(
-                    device.DeviceId(),
-                    DeviceNamePropertyKeys(),
-                    winrt::Windows::Devices::Enumeration::DeviceInformationKind::
-                        AssociationEndpoint)
-                    .get();
-            const auto refreshed_candidates =
-                DeviceInformationNameCandidates(refreshed_device_information);
-            constexpr const char *refreshed_sources[] = {
-                "RefreshedDeviceInformation.Name",
-                "RefreshedDeviceInformation.System.ItemNameDisplay",
-                "RefreshedDeviceInformation.System.Devices.Name",
-                "RefreshedDeviceInformation.System.Devices.FriendlyName",
-                "RefreshedDeviceInformation.System.Devices.ModelName",
-            };
-            for (size_t index = 0; index < refreshed_candidates.size(); ++index) {
-                AddNameCandidate(diagnostics, refreshed_sources[index],
-                                 refreshed_candidates[index]);
-            }
-        } catch (...) {
-            AddNameCandidate(diagnostics, "RefreshedDeviceInformation.Error", "");
-        }
-        if (HasText(diagnostics.selected_name)) {
-            return diagnostics;
-        }
-
-        const auto gatt_services =
-            device.GetGattServicesForUuidAsync(
-                      GattServiceUuids::GenericAccess(),
-                      BluetoothCacheMode::Uncached)
-                .get();
-        if (gatt_services.Status() != GattCommunicationStatus::Success) {
-            AddNameCandidate(diagnostics, "GattDeviceName", "");
-            diagnostics.status = "notResolved";
-            return diagnostics;
-        }
-
-        for (const auto &service : gatt_services.Services()) {
-            const auto characteristics =
-                service.GetCharacteristicsForUuidAsync(
-                           GattCharacteristicUuids::GapDeviceName(),
-                           BluetoothCacheMode::Uncached)
-                    .get();
-            if (characteristics.Status() !=
-                GattCommunicationStatus::Success) {
-                continue;
-            }
-
-            for (const auto &characteristic : characteristics.Characteristics()) {
-                const auto read_result =
-                    characteristic.ReadValueAsync(
-                                     BluetoothCacheMode::Uncached)
-                        .get();
-                if (read_result.Status() != GattCommunicationStatus::Success) {
-                    continue;
-                }
-
-                const auto buffer = read_result.Value();
-                if (!buffer || buffer.Length() == 0) {
-                    continue;
-                }
-
-                auto reader = DataReader::FromBuffer(buffer);
-                std::vector<uint8_t> bytes(buffer.Length());
-                reader.ReadBytes(winrt::array_view<uint8_t>(bytes));
-                const auto candidate =
-                    std::string(bytes.begin(), bytes.end());
-                AddNameCandidate(diagnostics, "GattDeviceName", candidate);
-                if (HasText(diagnostics.selected_name)) {
-                    return diagnostics;
-                }
-            }
-        }
-        diagnostics.status = "notResolved";
-        return diagnostics;
-    } catch (...) {
-        diagnostics.status = "error";
-        return diagnostics;
-    }
-}
-
-void ScheduleDeviceNameResolution(uint64_t bluetooth_address,
-                                  BluetoothAddressType address_type) {
-    std::thread([bluetooth_address, address_type]() {
-        const auto diagnostics =
-            ResolveDeviceNameFromBluetoothAddress(
-                bluetooth_address, address_type);
-        if (HasText(diagnostics.selected_name)) {
-            CacheDeviceName(bluetooth_address, diagnostics.selected_name);
-            QueueResolvedDeviceNameEvent(bluetooth_address, diagnostics);
-        }
-    }).detach();
-}
-
-std::string DisplayNameForAdvertisement(
-    uint64_t bluetooth_address,
-    BluetoothAddressType address_type,
-    const BluetoothLEAdvertisement &advertisement,
-    int64_t now_millis,
-    NameResolutionDiagnostics *diagnostics) {
-    auto display_name = winrt::to_string(advertisement.LocalName());
-    AddNameCandidate(*diagnostics, "advertisement.LocalName", display_name);
-    if (HasText(diagnostics->selected_name)) {
-        display_name = diagnostics->selected_name;
-        CacheDeviceName(bluetooth_address, display_name);
-        return TrimAsciiWhitespace(display_name);
-    }
-
-    display_name = CachedDeviceName(bluetooth_address);
-    AddNameCandidate(*diagnostics, "cache", display_name);
-    if (HasText(diagnostics->selected_name)) {
-        return diagnostics->selected_name;
-    }
-
-    if (!ShouldResolveDeviceName(bluetooth_address, now_millis)) {
-        if (diagnostics->status == "pending") {
-            diagnostics->status = "rateLimited";
-        }
-        return "";
-    }
-
-    if (diagnostics->status == "pending") {
-        diagnostics->status = "scheduled";
-    }
-    ScheduleDeviceNameResolution(bluetooth_address, address_type);
-    return "";
 }
 
 flutter::EncodableList ManufacturerDataBytes(
@@ -751,8 +338,7 @@ flutter::EncodableMap RawAdvertisementMap(
     const std::string &address,
     const std::string &address_hint,
     int64_t seen_at_millis,
-    const flutter::EncodableList &manufacturer_data,
-    const NameResolutionDiagnostics &name_resolution) {
+    const flutter::EncodableList &manufacturer_data) {
     const auto advertisement = args.Advertisement();
 
     flutter::EncodableMap result;
@@ -781,23 +367,18 @@ flutter::EncodableMap RawAdvertisementMap(
         flutter::EncodableValue(AdvertisementDataSections(advertisement));
     result[flutter::EncodableValue("serviceUuids")] =
         flutter::EncodableValue(ServiceUuids(advertisement));
-    result[flutter::EncodableValue("nameResolution")] =
-        flutter::EncodableValue(NameResolutionMap(name_resolution));
     return result;
 }
 
 flutter::EncodableMap ScanEventFromAdvertisement(
     const BluetoothLEAdvertisementReceivedEventArgs &args) {
     const auto bluetooth_address = args.BluetoothAddress();
-    const auto bluetooth_address_type = args.BluetoothAddressType();
     const auto now_millis = CurrentTimeMillis();
     const auto address = FormatBluetoothAddress(bluetooth_address);
     const auto address_hint = FormatBluetoothAddressHint(bluetooth_address);
     const auto advertisement = args.Advertisement();
-    NameResolutionDiagnostics name_resolution;
-    const auto display_name = DisplayNameForAdvertisement(
-        bluetooth_address, bluetooth_address_type, advertisement, now_millis,
-        &name_resolution);
+    const auto display_name =
+        TrimAsciiWhitespace(winrt::to_string(advertisement.LocalName()));
     const auto manufacturer_data = ManufacturerDataBytes(advertisement);
 
     flutter::EncodableMap event;
@@ -817,9 +398,7 @@ flutter::EncodableMap ScanEventFromAdvertisement(
         flutter::EncodableValue(manufacturer_data);
     event[flutter::EncodableValue("rawAdvertisement")] =
         flutter::EncodableValue(RawAdvertisementMap(
-            args, address, address_hint, now_millis, manufacturer_data,
-            name_resolution));
-    RememberLastScanEvent(bluetooth_address, event);
+            args, address, address_hint, now_millis, manufacturer_data));
     return event;
 }
 
@@ -1397,7 +976,7 @@ void BleunlockWindowsPlugin::StartScan() {
 
     if (!ble_watcher_->watcher) {
         ble_watcher_->watcher = BluetoothLEAdvertisementWatcher();
-        ble_watcher_->watcher.ScanningMode(BluetoothLEScanningMode::Active);
+        ble_watcher_->watcher.ScanningMode(BluetoothLEScanningMode::Passive);
         ble_watcher_->received_token = ble_watcher_->watcher.Received(
             [this](const BluetoothLEAdvertisementWatcher &,
                    const BluetoothLEAdvertisementReceivedEventArgs &args) {
@@ -1421,6 +1000,11 @@ void BleunlockWindowsPlugin::StopScan() {
         BluetoothLEAdvertisementWatcherStatus::Started) {
         ble_watcher_->watcher.Stop();
     }
+    if (ble_watcher_->received_token.value != 0) {
+        ble_watcher_->watcher.Received(ble_watcher_->received_token);
+        ble_watcher_->received_token = {};
+    }
+    ble_watcher_->watcher = nullptr;
     ble_watcher_->is_started = false;
 }
 
@@ -1428,7 +1012,7 @@ flutter::EncodableValue BleunlockWindowsPlugin::GetScannerCapability() {
     try {
         EnsureWinrtApartment();
         BluetoothLEAdvertisementWatcher probe;
-        probe.ScanningMode(BluetoothLEScanningMode::Active);
+        probe.ScanningMode(BluetoothLEScanningMode::Passive);
         return CapabilityMap("supported");
     } catch (const winrt::hresult_error &error) {
         return CapabilityMap(
