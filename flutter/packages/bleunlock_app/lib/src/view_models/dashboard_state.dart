@@ -140,9 +140,12 @@ class DashboardDeviceView {
   }) {
     final displayName = _normalizedText(device.displayName);
     final addressHint = _normalizedText(device.addressHint);
+    final broadcastAddressLabel =
+        _windowsBroadcastAddressLabel(device.rawAdvertisement);
     return DashboardDeviceView(
       id: device.platformId,
-      idLabel: 'ID ${_shortPlatformId(device.platformId)}',
+      idLabel:
+          broadcastAddressLabel ?? 'ID ${_shortPlatformId(device.platformId)}',
       name: displayName ?? addressHint ?? _shortPlatformId(device.platformId),
       rssiLabel: device.lastRssi == null ? '-- dBm' : '${device.lastRssi} dBm',
       lastSeenLabel: 'Last seen ${_timeLabel(device.lastSeenAt)}',
@@ -2042,6 +2045,40 @@ String _shortPlatformId(String platformId) {
   }
   return '${platformId.substring(0, 8)}...'
       '${platformId.substring(platformId.length - 4)}';
+}
+
+String? _windowsBroadcastAddressLabel(Map<String, Object?>? rawAdvertisement) {
+  final addressHint =
+      _normalizedText(rawAdvertisement?['bluetoothAddressHint']?.toString());
+  if (addressHint != null) {
+    return '广播地址 $addressHint';
+  }
+
+  final compactAddress =
+      _normalizedBluetoothAddress(rawAdvertisement?['bluetoothAddress']);
+  if (compactAddress == null) {
+    return null;
+  }
+  return '广播地址 ${_colonSeparatedBluetoothAddress(compactAddress)}';
+}
+
+String? _normalizedBluetoothAddress(Object? value) {
+  if (value == null) {
+    return null;
+  }
+  final normalized =
+      value.toString().replaceAll(RegExp(r'[^0-9a-fA-F]'), '').toUpperCase();
+  if (normalized.length != 12) {
+    return null;
+  }
+  return normalized;
+}
+
+String _colonSeparatedBluetoothAddress(String compactAddress) {
+  return [
+    for (var index = 0; index < compactAddress.length; index += 2)
+      compactAddress.substring(index, index + 2),
+  ].join(':');
 }
 
 bool _isWindowsPlatformLabel(String label) {

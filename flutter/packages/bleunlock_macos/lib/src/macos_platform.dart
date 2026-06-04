@@ -30,7 +30,7 @@ abstract interface class MacosBleScanBridge {
 
   Future<Object?> refreshCapability();
 
-  Future<void> startScan();
+  Future<void> startScan({BleScanMode mode = BleScanMode.passive});
 
   Future<void> stopScan();
 }
@@ -51,7 +51,7 @@ class InMemoryMacosBleScanBridge implements MacosBleScanBridge {
   }
 
   @override
-  Future<void> startScan() async {
+  Future<void> startScan({BleScanMode mode = BleScanMode.passive}) async {
     _isScanning = true;
   }
 
@@ -88,11 +88,11 @@ class MacosBleScanner implements BleScanner {
   }
 
   @override
-  Future<void> startScan() async {
+  Future<void> startScan({BleScanMode mode = BleScanMode.passive}) async {
     _nativeEventsSubscription ??= _scanBridge.events
         .map(_mapNativeEvent)
         .listen(_events.add, onError: _events.addError);
-    await _scanBridge.startScan();
+    await _scanBridge.startScan(mode: mode);
     _isScanning = true;
   }
 

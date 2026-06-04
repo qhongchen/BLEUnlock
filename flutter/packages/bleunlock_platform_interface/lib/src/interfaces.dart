@@ -1,6 +1,11 @@
 import 'capability_status.dart';
 import 'events.dart';
 
+enum BleScanMode {
+  passive,
+  active,
+}
+
 abstract interface class BleScanner {
   CapabilityStatus get capability;
 
@@ -8,7 +13,7 @@ abstract interface class BleScanner {
 
   Stream<BleScanEvent> get events;
 
-  Future<void> startScan();
+  Future<void> startScan({BleScanMode mode = BleScanMode.passive});
 
   Future<void> stopScan();
 }

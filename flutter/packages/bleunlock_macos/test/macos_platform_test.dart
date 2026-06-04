@@ -607,7 +607,7 @@ class FakeMacosBleScanBridge implements MacosBleScanBridge {
   }
 
   @override
-  Future<void> startScan() async {
+  Future<void> startScan({BleScanMode mode = BleScanMode.passive}) async {
     started = true;
   }
 

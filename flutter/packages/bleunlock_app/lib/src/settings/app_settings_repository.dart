@@ -7,11 +7,13 @@ class AppSettings {
   const AppSettings({
     required this.config,
     required this.selectedDeviceIds,
+    this.windowsIdentityProfiles = const {},
   });
 
   factory AppSettings.fromJson(Map<String, Object?> json) {
     final configJson = json['config'];
     final selectedIdsJson = json['selectedDeviceIds'];
+    final windowsProfilesJson = json['windowsIdentityProfiles'];
 
     return AppSettings(
       config: configJson is Map
@@ -20,19 +22,117 @@ class AppSettings {
       selectedDeviceIds: selectedIdsJson is List
           ? selectedIdsJson.whereType<String>().toSet()
           : const {},
+      windowsIdentityProfiles: windowsProfilesJson is Map
+          ? _windowsIdentityProfilesFromJson(
+              windowsProfilesJson.cast<String, Object?>(),
+            )
+          : const {},
     );
   }
 
   final ProximityConfig config;
   final Set<String> selectedDeviceIds;
+  final Map<String, WindowsBleIdentityProfile> windowsIdentityProfiles;
 
   Map<String, Object?> toJson() {
     final sortedSelectedIds = selectedDeviceIds.toList()..sort();
+    final sortedWindowsProfiles = Map.fromEntries(
+      windowsIdentityProfiles.entries.toList()
+        ..sort((left, right) => left.key.compareTo(right.key)),
+    );
     return {
-      'version': 1,
+      'version': 2,
       'config': _configToJson(config),
       'selectedDeviceIds': sortedSelectedIds,
+      if (sortedWindowsProfiles.isNotEmpty)
+        'windowsIdentityProfiles': {
+          for (final entry in sortedWindowsProfiles.entries)
+            entry.key: entry.value.toJson(),
+        },
     };
+  }
+}
+
+class WindowsBleIdentityProfile {
+  const WindowsBleIdentityProfile({
+    required this.deviceId,
+    this.displayName,
+    this.addressHint,
+    this.broadcastAddresses = const {},
+    this.serviceUuids = const {},
+    this.manufacturerCompanyIds = const {},
+    this.manufacturerFingerprints = const {},
+    this.lastSeenAt,
+  });
+
+  factory WindowsBleIdentityProfile.fromJson(Map<String, Object?> json) {
+    final deviceId = _stringValue(json['deviceId']);
+    return WindowsBleIdentityProfile(
+      deviceId: deviceId ?? '',
+      displayName: _stringValue(json['displayName']),
+      addressHint: _stringValue(json['addressHint']),
+      broadcastAddresses: _stringSet(json['broadcastAddresses']),
+      serviceUuids: _stringSet(json['serviceUuids']),
+      manufacturerCompanyIds: _stringSet(json['manufacturerCompanyIds']),
+      manufacturerFingerprints: _stringSet(json['manufacturerFingerprints']),
+      lastSeenAt: _dateTimeValue(json['lastSeenAt']),
+    );
+  }
+
+  final String deviceId;
+  final String? displayName;
+  final String? addressHint;
+  final Set<String> broadcastAddresses;
+  final Set<String> serviceUuids;
+  final Set<String> manufacturerCompanyIds;
+  final Set<String> manufacturerFingerprints;
+  final DateTime? lastSeenAt;
+
+  Map<String, Object?> toJson() {
+    return {
+      'deviceId': deviceId,
+      if (displayName != null) 'displayName': displayName,
+      if (addressHint != null) 'addressHint': addressHint,
+      if (broadcastAddresses.isNotEmpty)
+        'broadcastAddresses': _sortedList(broadcastAddresses),
+      if (serviceUuids.isNotEmpty) 'serviceUuids': _sortedList(serviceUuids),
+      if (manufacturerCompanyIds.isNotEmpty)
+        'manufacturerCompanyIds': _sortedList(manufacturerCompanyIds),
+      if (manufacturerFingerprints.isNotEmpty)
+        'manufacturerFingerprints': _sortedList(manufacturerFingerprints),
+      if (lastSeenAt != null)
+        'lastSeenAt': lastSeenAt!.toUtc().toIso8601String(),
+    };
+  }
+
+  WindowsBleIdentityProfile merge({
+    String? displayName,
+    String? addressHint,
+    Set<String> broadcastAddresses = const {},
+    Set<String> serviceUuids = const {},
+    Set<String> manufacturerCompanyIds = const {},
+    Set<String> manufacturerFingerprints = const {},
+    DateTime? lastSeenAt,
+  }) {
+    return WindowsBleIdentityProfile(
+      deviceId: deviceId,
+      displayName: displayName ?? this.displayName,
+      addressHint: addressHint ?? this.addressHint,
+      broadcastAddresses: _boundedUnion(
+        this.broadcastAddresses,
+        broadcastAddresses,
+      ),
+      serviceUuids: _boundedUnion(this.serviceUuids, serviceUuids),
+      manufacturerCompanyIds: _boundedUnion(
+        this.manufacturerCompanyIds,
+        manufacturerCompanyIds,
+      ),
+      manufacturerFingerprints: _boundedUnion(
+        this.manufacturerFingerprints,
+        manufacturerFingerprints,
+      ),
+      lastSeenAt: lastSeenAt ?? this.lastSeenAt,
+    );
   }
 }
 
@@ -153,4 +253,76 @@ LockDeviceLogic _lockLogicValue(Object? value) {
     }
   }
   return LockDeviceLogic.allAway;
+}
+
+Map<String, WindowsBleIdentityProfile> _windowsIdentityProfilesFromJson(
+  Map<String, Object?> json,
+) {
+  final profiles = <String, WindowsBleIdentityProfile>{};
+  for (final entry in json.entries) {
+    final value = entry.value;
+    if (value is! Map) {
+      continue;
+    }
+    final profile = WindowsBleIdentityProfile.fromJson(
+      value.cast<String, Object?>(),
+    );
+    final deviceId = profile.deviceId.isEmpty ? entry.key : profile.deviceId;
+    profiles[deviceId] = profile.deviceId.isEmpty
+        ? WindowsBleIdentityProfile(
+            deviceId: deviceId,
+            displayName: profile.displayName,
+            addressHint: profile.addressHint,
+            broadcastAddresses: profile.broadcastAddresses,
+            serviceUuids: profile.serviceUuids,
+            manufacturerCompanyIds: profile.manufacturerCompanyIds,
+            manufacturerFingerprints: profile.manufacturerFingerprints,
+            lastSeenAt: profile.lastSeenAt,
+          )
+        : profile;
+  }
+  return Map.unmodifiable(profiles);
+}
+
+String? _stringValue(Object? value) {
+  if (value is! String) {
+    return null;
+  }
+  final trimmed = value.trim();
+  return trimmed.isEmpty ? null : trimmed;
+}
+
+Set<String> _stringSet(Object? value) {
+  if (value is! List) {
+    return const {};
+  }
+  return value
+      .whereType<String>()
+      .map((item) => item.trim())
+      .where((item) => item.isNotEmpty)
+      .toSet();
+}
+
+DateTime? _dateTimeValue(Object? value) {
+  final text = _stringValue(value);
+  return text == null ? null : DateTime.tryParse(text);
+}
+
+List<String> _sortedList(Set<String> values) {
+  return values.toList()..sort();
+}
+
+Set<String> _boundedUnion(
+  Set<String> previous,
+  Set<String> next, {
+  int limit = 16,
+}) {
+  final values = <String>[...previous, ...next]
+      .map((value) => value.trim())
+      .where((value) => value.isNotEmpty)
+      .toList();
+  if (values.length <= limit) {
+    return values.toSet();
+  }
+  return values.skip(values.length - limit).toSet();
 }

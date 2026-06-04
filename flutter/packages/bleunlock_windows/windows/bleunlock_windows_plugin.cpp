@@ -555,6 +555,7 @@ struct WindowsBleWatcherState {
     BluetoothLEAdvertisementWatcher watcher{nullptr};
     winrt::event_token received_token{};
     bool is_started = false;
+    bool active = false;
 };
 
 BleunlockWindowsPlugin::BleunlockWindowsPlugin()
@@ -799,7 +800,15 @@ void BleunlockWindowsPlugin::HandleMethodCall(
 
     if (method_call.method_name() == "startScan") {
         try {
-            StartScan();
+            auto active = false;
+            const auto *arguments = ArgumentsMap(method_call.arguments());
+            if (arguments != nullptr) {
+                std::string mode;
+                if (OptionalStringArgument(*arguments, "mode", &mode)) {
+                    active = mode == "active";
+                }
+            }
+            StartScan(active);
             result->Success();
         } catch (const winrt::hresult_error &error) {
             result->Error("ble_scan_failed", winrt::to_string(error.message()));
@@ -972,17 +981,24 @@ void BleunlockWindowsPlugin::HandleMethodCall(
     result->NotImplemented();
 }
 
-void BleunlockWindowsPlugin::StartScan() {
+void BleunlockWindowsPlugin::StartScan(bool active) {
     EnsureWinrtApartment();
+
+    if (ble_watcher_->watcher && ble_watcher_->active != active) {
+        StopScan();
+    }
 
     if (!ble_watcher_->watcher) {
         ble_watcher_->watcher = BluetoothLEAdvertisementWatcher();
-        ble_watcher_->watcher.ScanningMode(BluetoothLEScanningMode::Passive);
+        ble_watcher_->watcher.ScanningMode(
+            active ? BluetoothLEScanningMode::Active
+                   : BluetoothLEScanningMode::Passive);
         ble_watcher_->received_token = ble_watcher_->watcher.Received(
             [this](const BluetoothLEAdvertisementWatcher &,
                    const BluetoothLEAdvertisementReceivedEventArgs &args) {
                 QueueScanEvent(ScanEventFromAdvertisement(args));
             });
+        ble_watcher_->active = active;
     }
 
     if (ble_watcher_->watcher.Status() !=

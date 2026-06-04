@@ -14,6 +14,7 @@ class AppCoordinator {
   static const int _scanLogRssiChangeThreshold = 5;
   static const Duration _windowsBleIdentityAliasWindow = Duration(minutes: 5);
   static const int _windowsBleIdentityRssiTolerance = 18;
+  static const Duration _windowsEnhancedDiscoveryWindow = Duration(seconds: 8);
 
   AppCoordinator({
     required this.platform,
@@ -62,6 +63,7 @@ class AppCoordinator {
   final Map<String, BleScanEvent> _visibleDevices = {};
   final Map<String, BleScanEvent> _publishedVisibleDevices = {};
   final Map<String, _WindowsBleDeviceAlias> _windowsDeviceAliases = {};
+  final Map<String, WindowsBleIdentityProfile> _windowsIdentityProfiles = {};
   final Map<_ActionKind, DateTime> _lastActionAt = {};
   final Map<String, String> _lastLoggedPresenceSignatures = {};
   final Map<String, _LoggedScanSample> _lastLoggedScanSamples = {};
@@ -78,6 +80,7 @@ class AppCoordinator {
   Timer? _wakeUnlockTimer;
   Timer? _tickTimer;
   Timer? _deviceListRefreshTimer;
+  Timer? _windowsEnhancedDiscoveryTimer;
   DashboardState _value;
   PresenceDecision? _lastDecision;
   PresenceDecision? _visibleDeviceListDecision;
@@ -95,6 +98,7 @@ class AppCoordinator {
   String? _autoUnlockSuppressionReason;
   bool _hasLoggedAutoUnlockSuppression = false;
   bool _hasWokenForCurrentCloseCycle = false;
+  bool _isWindowsEnhancedDiscoverySwitching = false;
 
   DashboardState get value => _value;
 
@@ -124,6 +128,9 @@ class AppCoordinator {
     _selectedDeviceIds
       ..clear()
       ..addAll(settings.selectedDeviceIds);
+    _windowsIdentityProfiles
+      ..clear()
+      ..addAll(settings.windowsIdentityProfiles);
     _rebuildEngine();
     _lastActionLabel = 'Settings loaded';
     _appendLog(
@@ -305,6 +312,7 @@ class AppCoordinator {
       );
     }
     _isScanning = false;
+    _cancelWindowsEnhancedDiscoveryTimer();
     _lastActionLabel = 'Monitoring paused';
     _appendLog(
       timestamp: DateTime.now(),
@@ -319,11 +327,13 @@ class AppCoordinator {
     final wasMonitoring = _isMonitoring;
     if (isSelected) {
       _selectedDeviceIds.add(deviceId);
+      _rememberWindowsIdentitySelection(deviceId);
     } else {
       _selectedDeviceIds.remove(deviceId);
       _windowsDeviceAliases.removeWhere((_, canonicalId) {
         return canonicalId.deviceId == deviceId;
       });
+      _windowsIdentityProfiles.remove(deviceId);
     }
 
     final shouldPauseForEmptySelection =
@@ -347,6 +357,9 @@ class AppCoordinator {
 
   void refreshDeviceList() {
     _cancelDeviceListRefreshTimer();
+    if (_isWindowsPlatform && _isScanning) {
+      unawaited(_startWindowsEnhancedDiscovery());
+    }
     _publishDeviceList(_latestScanAt ?? DateTime.now());
   }
 
@@ -688,6 +701,7 @@ class AppCoordinator {
     _cancelWakeUnlockTimer();
     _stopTickTimer();
     _cancelDeviceListRefreshTimer();
+    _cancelWindowsEnhancedDiscoveryTimer();
     _isMonitoring = false;
     _isScanning = false;
     final scanSubscription = _scanSubscription;
@@ -727,6 +741,7 @@ class AppCoordinator {
     final isNewDevice = !_visibleDevices.containsKey(event.deviceId);
     final mergedEvent = _mergeScanEvent(_visibleDevices[event.deviceId], event);
     _visibleDevices[event.deviceId] = mergedEvent;
+    _rememberWindowsIdentityObservation(mergedEvent);
     if (!_isMonitoring) {
       _appendScanLogIfUseful(mergedEvent);
       if (isNewDevice) {
@@ -831,11 +846,18 @@ class AppCoordinator {
 
     for (final selectedDeviceId in _selectedDeviceIds) {
       final previous = _visibleDevices[selectedDeviceId];
-      if (previous == null) {
+      final profile = _windowsIdentityProfiles[selectedDeviceId];
+      if (previous == null && profile == null) {
         continue;
       }
 
-      final score = _windowsBleIdentityMatchScore(previous, event);
+      final score = previous == null
+          ? _windowsBleIdentityProfileMatchScore(profile!, event)
+          : _windowsBleIdentityMatchScore(previous, event) +
+              _windowsBleIdentityProfileMatchScore(
+                profile,
+                event,
+              );
       if (score <= 0) {
         continue;
       }
@@ -909,6 +931,119 @@ class AppCoordinator {
     return score;
   }
 
+  int _windowsBleIdentityProfileMatchScore(
+    WindowsBleIdentityProfile? profile,
+    BleScanEvent event,
+  ) {
+    if (profile == null) {
+      return 0;
+    }
+
+    final broadcastAddress = _windowsBroadcastAddress(event);
+    final profileBroadcastAddresses = profile.broadcastAddresses
+        .map(_normalizedWindowsAddress)
+        .whereType<String>()
+        .toSet();
+    if (broadcastAddress != null &&
+        profileBroadcastAddresses.contains(broadcastAddress)) {
+      return 12;
+    }
+
+    final eventName = _stableBleName(event);
+    final profileName = _normalizedStableText(profile.displayName);
+    final hasNameMatch = eventName != null && eventName == profileName;
+    final hasServiceMatch = _hasIntersection(
+      profile.serviceUuids,
+      _serviceUuidSet(event),
+    );
+    final hasManufacturerFingerprintMatch = _hasIntersection(
+      profile.manufacturerFingerprints,
+      _manufacturerFingerprintSet(event),
+    );
+    final hasCompanyMatch = _hasIntersection(
+      profile.manufacturerCompanyIds,
+      _manufacturerCompanyIdSet(event),
+    );
+
+    if (!hasNameMatch && !hasServiceMatch && !hasManufacturerFingerprintMatch) {
+      return 0;
+    }
+
+    var score = 0;
+    if (hasNameMatch) {
+      score += 6;
+    }
+    if (hasServiceMatch) {
+      score += 5;
+    }
+    if (hasManufacturerFingerprintMatch) {
+      score += 5;
+    }
+    if (hasCompanyMatch) {
+      score += 1;
+    }
+    return score;
+  }
+
+  void _rememberWindowsIdentitySelection(String deviceId) {
+    if (!_isWindowsPlatform) {
+      return;
+    }
+    final event =
+        _visibleDevices[deviceId] ?? _publishedVisibleDevices[deviceId];
+    if (event == null) {
+      _windowsIdentityProfiles.putIfAbsent(
+        deviceId,
+        () => WindowsBleIdentityProfile(deviceId: deviceId),
+      );
+      return;
+    }
+    _rememberWindowsIdentityObservation(event, forceSelected: true);
+  }
+
+  void _rememberWindowsIdentityObservation(
+    BleScanEvent event, {
+    bool forceSelected = false,
+  }) {
+    if (!_isWindowsPlatform ||
+        (!forceSelected && !_selectedDeviceIds.contains(event.deviceId))) {
+      return;
+    }
+
+    final broadcastAddress = _windowsBroadcastAddress(event);
+    final deviceAddress = _normalizedWindowsAddress(event.deviceId);
+    final displayName =
+        _normalizedText(event.displayName) ?? _stableProfileDisplayName(event);
+    final addressHint = _normalizedText(event.addressHint);
+    final previous = _windowsIdentityProfiles[event.deviceId] ??
+        WindowsBleIdentityProfile(deviceId: event.deviceId);
+    final next = previous.merge(
+      displayName: displayName,
+      addressHint: addressHint,
+      broadcastAddresses: {
+        if (deviceAddress != null) deviceAddress,
+        if (broadcastAddress != null) broadcastAddress,
+      },
+      serviceUuids: _serviceUuidSet(event),
+      manufacturerCompanyIds: _manufacturerCompanyIdSet(event),
+      manufacturerFingerprints: _manufacturerFingerprintSet(event),
+      lastSeenAt: event.seenAt,
+    );
+    _windowsIdentityProfiles[event.deviceId] = next;
+    if (_windowsIdentityProfileChanged(previous, next)) {
+      _saveSettings();
+    }
+  }
+
+  String? _stableProfileDisplayName(BleScanEvent event) {
+    final stableName = _stableBleName(event);
+    if (stableName == null) {
+      return null;
+    }
+    return _normalizedText(event.displayName) ??
+        _normalizedText(event.rawAdvertisement?['localName']?.toString());
+  }
+
   BleScanEvent _copyScanEventWithDeviceId(
     BleScanEvent event,
     String deviceId,
@@ -973,6 +1108,93 @@ class AppCoordinator {
   void _cancelDeviceListRefreshTimer() {
     _deviceListRefreshTimer?.cancel();
     _deviceListRefreshTimer = null;
+  }
+
+  Future<void> _startWindowsEnhancedDiscovery() async {
+    if (!_isWindowsPlatform ||
+        !_isScanning ||
+        _isDisposed ||
+        _isWindowsEnhancedDiscoverySwitching) {
+      return;
+    }
+
+    _cancelWindowsEnhancedDiscoveryTimer();
+    _isWindowsEnhancedDiscoverySwitching = true;
+    try {
+      await platform.scanner.startScan(mode: BleScanMode.active);
+    } catch (error) {
+      _appendPlatformFailureLog(
+        timestamp: DateTime.now(),
+        label: 'Windows enhanced discovery failed',
+        reason: 'windowsEnhancedDiscoveryFailed',
+        error: error,
+      );
+      _publish(_lastDecision);
+      return;
+    } finally {
+      _isWindowsEnhancedDiscoverySwitching = false;
+    }
+
+    if (_isDisposed || !_isScanning) {
+      return;
+    }
+
+    _appendLog(
+      timestamp: DateTime.now(),
+      category: DashboardLogCategory.action,
+      message: 'Windows enhanced discovery started',
+      reason: 'windowsEnhancedDiscoveryStarted',
+    );
+    _windowsEnhancedDiscoveryTimer = Timer(_windowsEnhancedDiscoveryWindow, () {
+      _windowsEnhancedDiscoveryTimer = null;
+      if (_isDisposed || !_isScanning) {
+        return;
+      }
+      unawaited(_restoreWindowsPassiveDiscovery());
+    });
+    _publish(_lastDecision);
+  }
+
+  Future<void> _restoreWindowsPassiveDiscovery() async {
+    if (!_isWindowsPlatform ||
+        !_isScanning ||
+        _isDisposed ||
+        _isWindowsEnhancedDiscoverySwitching) {
+      return;
+    }
+
+    _isWindowsEnhancedDiscoverySwitching = true;
+    try {
+      await platform.scanner.startScan(mode: BleScanMode.passive);
+    } catch (error) {
+      _appendPlatformFailureLog(
+        timestamp: DateTime.now(),
+        label: 'Windows passive discovery restore failed',
+        reason: 'windowsPassiveDiscoveryRestoreFailed',
+        error: error,
+      );
+      _publish(_lastDecision);
+      return;
+    } finally {
+      _isWindowsEnhancedDiscoverySwitching = false;
+    }
+
+    if (_isDisposed || !_isScanning) {
+      return;
+    }
+
+    _appendLog(
+      timestamp: DateTime.now(),
+      category: DashboardLogCategory.action,
+      message: 'Windows passive discovery restored',
+      reason: 'windowsPassiveDiscoveryRestored',
+    );
+    _publish(_lastDecision);
+  }
+
+  void _cancelWindowsEnhancedDiscoveryTimer() {
+    _windowsEnhancedDiscoveryTimer?.cancel();
+    _windowsEnhancedDiscoveryTimer = null;
   }
 
   void _pruneExpiredVisibleDevices(DateTime timestamp) {
@@ -1043,6 +1265,7 @@ class AppCoordinator {
         AppSettings(
           config: config,
           selectedDeviceIds: Set.unmodifiable(_selectedDeviceIds),
+          windowsIdentityProfiles: Map.unmodifiable(_windowsIdentityProfiles),
         ),
       ),
     );
@@ -2306,6 +2529,29 @@ String? _stableBleName(BleScanEvent event) {
       _normalizedStableText(event.rawAdvertisement?['localName']);
 }
 
+String? _windowsBroadcastAddress(BleScanEvent event) {
+  return _normalizedWindowsAddress(
+        event.rawAdvertisement?['bluetoothAddress'],
+      ) ??
+      _normalizedWindowsAddress(
+        event.rawAdvertisement?['bluetoothAddressHint'],
+      ) ??
+      _normalizedWindowsAddress(event.addressHint) ??
+      _normalizedWindowsAddress(event.deviceId);
+}
+
+String? _normalizedWindowsAddress(Object? value) {
+  if (value == null) {
+    return null;
+  }
+  final normalized =
+      value.toString().replaceAll(RegExp(r'[^0-9a-fA-F]'), '').toLowerCase();
+  if (normalized.length != 12) {
+    return null;
+  }
+  return normalized;
+}
+
 Set<String> _serviceUuidSet(BleScanEvent event) {
   final values = event.rawAdvertisement?['serviceUuids'];
   if (values is! List) {
@@ -2415,6 +2661,32 @@ bool _hasIntersection(Set<String> left, Set<String> right) {
     return false;
   }
   return left.any(right.contains);
+}
+
+bool _windowsIdentityProfileChanged(
+  WindowsBleIdentityProfile previous,
+  WindowsBleIdentityProfile next,
+) {
+  return previous.deviceId != next.deviceId ||
+      previous.displayName != next.displayName ||
+      previous.addressHint != next.addressHint ||
+      !_sameStringSet(previous.broadcastAddresses, next.broadcastAddresses) ||
+      !_sameStringSet(previous.serviceUuids, next.serviceUuids) ||
+      !_sameStringSet(
+        previous.manufacturerCompanyIds,
+        next.manufacturerCompanyIds,
+      ) ||
+      !_sameStringSet(
+        previous.manufacturerFingerprints,
+        next.manufacturerFingerprints,
+      );
+}
+
+bool _sameStringSet(Set<String> left, Set<String> right) {
+  if (left.length != right.length) {
+    return false;
+  }
+  return left.every(right.contains);
 }
 
 String? _rawString(Object? value) {

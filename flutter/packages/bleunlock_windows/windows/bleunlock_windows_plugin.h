@@ -39,7 +39,7 @@ class BleunlockWindowsPlugin : public flutter::Plugin {
         const flutter::MethodCall<flutter::EncodableValue> &method_call,
         std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
 
-    void StartScan();
+    void StartScan(bool active);
 
     void StopScan();
 

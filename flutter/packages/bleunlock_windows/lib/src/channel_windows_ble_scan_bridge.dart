@@ -1,4 +1,5 @@
 import 'package:bleunlock_windows/src/windows_platform.dart';
+import 'package:bleunlock_platform_interface/bleunlock_platform_interface.dart';
 import 'package:flutter/services.dart';
 
 class ChannelWindowsBleScanBridge implements WindowsBleScanBridge {
@@ -22,8 +23,11 @@ class ChannelWindowsBleScanBridge implements WindowsBleScanBridge {
   }
 
   @override
-  Future<void> startScan() async {
-    await _methodChannel.invokeMethod<void>('startScan');
+  Future<void> startScan({BleScanMode mode = BleScanMode.passive}) async {
+    await _methodChannel.invokeMethod<void>(
+      'startScan',
+      {'mode': mode.name},
+    );
   }
 
   @override

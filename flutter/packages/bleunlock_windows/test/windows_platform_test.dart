@@ -102,7 +102,7 @@ Future<void> testWindowsNativeKeepsPermanentScanPathLightweight() async {
   final source = File(sourcePath).readAsStringSync();
 
   assert(source.contains('BluetoothLEScanningMode::Passive'));
-  assert(!source.contains('BluetoothLEScanningMode::Active'));
+  assert(source.contains('BluetoothLEScanningMode::Active'));
   assert(!source.contains('BluetoothLEDevice::FromBluetoothAddressAsync'));
   assert(!source.contains('DeviceInformation::CreateFromIdAsync'));
   assert(!source.contains('GetGattServicesForUuidAsync'));
@@ -127,7 +127,9 @@ Future<void> testWindowsNativeUsesPassiveBleScanningByDefault() async {
   final source = File(sourcePath).readAsStringSync();
 
   assert(source.contains('BluetoothLEScanningMode::Passive'));
-  assert(!source.contains('ScanningMode(BluetoothLEScanningMode::Active);'));
+  assert(source.contains('mode == "active"'));
+  assert(source.contains('StartScan(active)'));
+  assert(source.contains('ble_watcher_->active != active'));
   assert(source.contains(
     'ble_watcher_->watcher.Received(ble_watcher_->received_token);',
   ));
@@ -579,7 +581,7 @@ class FakeWindowsBleScanBridge implements WindowsBleScanBridge {
   }
 
   @override
-  Future<void> startScan() async {
+  Future<void> startScan({BleScanMode mode = BleScanMode.passive}) async {
     started = true;
   }
 

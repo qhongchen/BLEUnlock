@@ -1,4 +1,5 @@
 import 'package:bleunlock_macos/src/macos_platform.dart';
+import 'package:bleunlock_platform_interface/bleunlock_platform_interface.dart';
 import 'package:flutter/services.dart';
 
 class ChannelMacosBleScanBridge implements MacosBleScanBridge {
@@ -22,7 +23,7 @@ class ChannelMacosBleScanBridge implements MacosBleScanBridge {
   }
 
   @override
-  Future<void> startScan() async {
+  Future<void> startScan({BleScanMode mode = BleScanMode.passive}) async {
     await _methodChannel.invokeMethod<void>('startScan');
   }
 
