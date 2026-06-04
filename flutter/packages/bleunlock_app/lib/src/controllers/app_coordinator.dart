@@ -12,6 +12,8 @@ class AppCoordinator {
       'macosAutomaticUnlockPassword';
   static const Duration _scanLogSampleInterval = Duration(seconds: 5);
   static const int _scanLogRssiChangeThreshold = 5;
+  static const Duration _windowsBleIdentityAliasWindow = Duration(minutes: 5);
+  static const int _windowsBleIdentityRssiTolerance = 18;
 
   AppCoordinator({
     required this.platform,
@@ -59,6 +61,7 @@ class AppCoordinator {
   final Set<String> _selectedDeviceIds;
   final Map<String, BleScanEvent> _visibleDevices = {};
   final Map<String, BleScanEvent> _publishedVisibleDevices = {};
+  final Map<String, _WindowsBleDeviceAlias> _windowsDeviceAliases = {};
   final Map<_ActionKind, DateTime> _lastActionAt = {};
   final Map<String, String> _lastLoggedPresenceSignatures = {};
   final Map<String, _LoggedScanSample> _lastLoggedScanSamples = {};
@@ -91,6 +94,7 @@ class AppCoordinator {
   String? _lastLoggedDecisionSignature;
   String? _autoUnlockSuppressionReason;
   bool _hasLoggedAutoUnlockSuppression = false;
+  bool _hasWokenForCurrentCloseCycle = false;
 
   DashboardState get value => _value;
 
@@ -317,6 +321,9 @@ class AppCoordinator {
       _selectedDeviceIds.add(deviceId);
     } else {
       _selectedDeviceIds.remove(deviceId);
+      _windowsDeviceAliases.removeWhere((_, canonicalId) {
+        return canonicalId.deviceId == deviceId;
+      });
     }
 
     final shouldPauseForEmptySelection =
@@ -713,6 +720,7 @@ class AppCoordinator {
   }
 
   void _handleScan(BleScanEvent event) {
+    event = _resolveWindowsBleIdentity(event);
     if (_latestScanAt == null || event.seenAt.isAfter(_latestScanAt!)) {
       _latestScanAt = event.seenAt;
     }
@@ -763,6 +771,156 @@ class AppCoordinator {
         next.manufacturerData,
       ),
       rawAdvertisement: next.rawAdvertisement ?? previous.rawAdvertisement,
+    );
+  }
+
+  BleScanEvent _resolveWindowsBleIdentity(BleScanEvent event) {
+    if (!_isWindowsPlatform || _selectedDeviceIds.isEmpty) {
+      return event;
+    }
+    _pruneWindowsBleIdentityAliases(event.seenAt);
+    if (_selectedDeviceIds.contains(event.deviceId)) {
+      return event;
+    }
+
+    final knownAlias = _windowsDeviceAliases[event.deviceId];
+    if (knownAlias != null) {
+      if (_selectedDeviceIds.contains(knownAlias.deviceId)) {
+        _windowsDeviceAliases[event.deviceId] = knownAlias.seen(event.seenAt);
+        return _copyScanEventWithDeviceId(event, knownAlias.deviceId);
+      }
+      _windowsDeviceAliases.remove(event.deviceId);
+    }
+
+    final alias = _findWindowsBleIdentityAlias(event);
+    if (alias == null) {
+      return event;
+    }
+
+    _windowsDeviceAliases[event.deviceId] =
+        _WindowsBleDeviceAlias(deviceId: alias, seenAt: event.seenAt);
+    _appendLog(
+      timestamp: event.seenAt,
+      category: DashboardLogCategory.action,
+      message: 'Windows BLE identity alias',
+      displayName: _normalizedText(event.displayName),
+      addressHint: _normalizedText(event.addressHint),
+      deviceId: alias,
+      rssi: event.rssi,
+      reason: 'windowsBleIdentityAlias',
+      manufacturerData: event.manufacturerData,
+      rawAdvertisement: event.rawAdvertisement,
+      sessionState: _sessionState,
+    );
+    return _copyScanEventWithDeviceId(event, alias);
+  }
+
+  void _pruneWindowsBleIdentityAliases(DateTime timestamp) {
+    _windowsDeviceAliases.removeWhere((_, alias) {
+      final age = timestamp.difference(alias.seenAt);
+      return !_selectedDeviceIds.contains(alias.deviceId) ||
+          age.isNegative ||
+          age > _windowsBleIdentityAliasWindow;
+    });
+  }
+
+  String? _findWindowsBleIdentityAlias(BleScanEvent event) {
+    String? bestDeviceId;
+    var bestScore = 0;
+    var isAmbiguous = false;
+
+    for (final selectedDeviceId in _selectedDeviceIds) {
+      final previous = _visibleDevices[selectedDeviceId];
+      if (previous == null) {
+        continue;
+      }
+
+      final score = _windowsBleIdentityMatchScore(previous, event);
+      if (score <= 0) {
+        continue;
+      }
+      if (score > bestScore) {
+        bestDeviceId = selectedDeviceId;
+        bestScore = score;
+        isAmbiguous = false;
+      } else if (score == bestScore) {
+        isAmbiguous = true;
+      }
+    }
+
+    return isAmbiguous ? null : bestDeviceId;
+  }
+
+  int _windowsBleIdentityMatchScore(
+    BleScanEvent previous,
+    BleScanEvent next,
+  ) {
+    final age = next.seenAt.difference(previous.seenAt);
+    if (age.isNegative || age > _windowsBleIdentityAliasWindow) {
+      return 0;
+    }
+
+    final previousName = _stableBleName(previous);
+    final nextName = _stableBleName(next);
+    final hasNameMatch = previousName != null && previousName == nextName;
+    final hasServiceMatch = _hasIntersection(
+      _serviceUuidSet(previous),
+      _serviceUuidSet(next),
+    );
+    final hasManufacturerFingerprintMatch = _hasIntersection(
+      _manufacturerFingerprintSet(previous),
+      _manufacturerFingerprintSet(next),
+    );
+    final hasCompanyMatch = _hasIntersection(
+      _manufacturerCompanyIdSet(previous),
+      _manufacturerCompanyIdSet(next),
+    );
+    final rssiIsClose =
+        (previous.rssi - next.rssi).abs() <= _windowsBleIdentityRssiTolerance;
+
+    if (!hasNameMatch && !hasServiceMatch && !hasManufacturerFingerprintMatch) {
+      return 0;
+    }
+
+    var score = 0;
+    if (hasNameMatch) {
+      score += 6;
+    }
+    if (hasServiceMatch) {
+      score += 5;
+    }
+    if (hasManufacturerFingerprintMatch) {
+      score += 4;
+    }
+    if (hasCompanyMatch) {
+      score += 1;
+    }
+    if (rssiIsClose) {
+      score += 2;
+    }
+    final previousAdvertisementType =
+        _rawString(previous.rawAdvertisement?['advertisementType']);
+    final nextAdvertisementType =
+        _rawString(next.rawAdvertisement?['advertisementType']);
+    if (previousAdvertisementType != null &&
+        previousAdvertisementType == nextAdvertisementType) {
+      score += 1;
+    }
+    return score;
+  }
+
+  BleScanEvent _copyScanEventWithDeviceId(
+    BleScanEvent event,
+    String deviceId,
+  ) {
+    return BleScanEvent(
+      deviceId: deviceId,
+      displayName: event.displayName,
+      addressHint: event.addressHint,
+      rssi: event.rssi,
+      seenAt: event.seenAt,
+      manufacturerData: event.manufacturerData,
+      rawAdvertisement: event.rawAdvertisement,
     );
   }
 
@@ -1062,7 +1220,6 @@ class AppCoordinator {
       case SessionEventKind.locked:
         _sessionState = DashboardSessionState.locked;
         _hasLoggedAlreadyLockedSkip = false;
-        _suspendAutoUnlockUntilDeviceLeaves('manualLock');
       case SessionEventKind.displaySleep:
         _sessionState = DashboardSessionState.displaySleep;
         _hasLoggedAlreadyLockedSkip = false;
@@ -1072,6 +1229,7 @@ class AppCoordinator {
       case SessionEventKind.unlocked:
         _sessionState = DashboardSessionState.unlocked;
         _hasLoggedAlreadyLockedSkip = false;
+        _hasWokenForCurrentCloseCycle = false;
         _clearAutoUnlockSuppression();
         _cancelWakeUnlockTimer();
         _cancelUnlockRetry(reason: 'sessionNotLockedForRetry');
@@ -1121,6 +1279,9 @@ class AppCoordinator {
     bool refreshDeviceListNow = false,
   }) {
     _lastDecision = decision;
+    if (!_hasCloseTrackedDevice(decision)) {
+      _hasWokenForCurrentCloseCycle = false;
+    }
     _clearAutoUnlockSuppressionIfDeviceLeft(decision);
     if (_shouldLogDecision(decision)) {
       _appendLog(
@@ -1207,15 +1368,18 @@ class AppCoordinator {
       return;
     }
 
-    if (decision.shouldWake) {
-      await _wakeFromDecision(decision.timestamp);
+    final didWake = decision.shouldWake && !_hasWokenForCurrentCloseCycle
+        ? await _wakeFromDecision(decision.timestamp)
+        : false;
+    if (didWake) {
+      _hasWokenForCurrentCloseCycle = true;
     }
 
     if (!decision.shouldUnlock) {
       return;
     }
 
-    if (decision.shouldWake && waitForWakeLoginUi) {
+    if (didWake && waitForWakeLoginUi) {
       _scheduleWakeUnlock(decision.timestamp);
     } else {
       await _unlockFromDecision(decision.timestamp);
@@ -1337,6 +1501,7 @@ class AppCoordinator {
           : DashboardSessionState.unlocked;
       if (!isLocked) {
         _hasLoggedAlreadyLockedSkip = false;
+        _hasWokenForCurrentCloseCycle = false;
       }
       return isLocked;
     } catch (error) {
@@ -1373,6 +1538,7 @@ class AppCoordinator {
       _hasLoggedAlreadyLockedSkip = false;
       if (!isLocked) {
         _cancelUnlockRetry(reason: 'sessionNotLockedForRetry');
+        _hasWokenForCurrentCloseCycle = false;
       }
       _lastActionLabel = isLocked ? 'Session locked' : 'Session unlocked';
       _appendLog(
@@ -1395,11 +1561,11 @@ class AppCoordinator {
     }
   }
 
-  Future<void> _wakeFromDecision(DateTime timestamp) async {
+  Future<bool> _wakeFromDecision(DateTime timestamp) async {
     if (_isActionThrottled(_ActionKind.wake, timestamp)) {
       _appendThrottledActionLog(timestamp, 'Wake throttled');
       _publish();
-      return;
+      return false;
     }
     _markAction(_ActionKind.wake, timestamp);
 
@@ -1415,7 +1581,7 @@ class AppCoordinator {
         reason: 'unsupported',
       );
       _publish();
-      return;
+      return false;
     }
 
     try {
@@ -1427,6 +1593,8 @@ class AppCoordinator {
         message: _lastActionLabel,
         reason: 'proximityDecision',
       );
+      _publish();
+      return true;
     } catch (error) {
       _appendPlatformFailureLog(
         timestamp: timestamp,
@@ -1436,6 +1604,7 @@ class AppCoordinator {
       );
     }
     _publish();
+    return false;
   }
 
   Future<void> _unlockFromDecision(DateTime timestamp) async {
@@ -1475,6 +1644,7 @@ class AppCoordinator {
     }
     if (!isLocked) {
       _sessionState = DashboardSessionState.unlocked;
+      _hasWokenForCurrentCloseCycle = false;
       _lastActionLabel = 'Unlock skipped';
       _appendLog(
         timestamp: timestamp,
@@ -1531,6 +1701,7 @@ class AppCoordinator {
       final result = await platform.unlock.unlock();
       if (result.success) {
         _sessionState = DashboardSessionState.unlocked;
+        _hasWokenForCurrentCloseCycle = false;
         _clearAutoUnlockSuppression();
       }
       _lastActionLabel = result.success ? 'Unlocked session' : 'Unlock failed';
@@ -1588,6 +1759,7 @@ class AppCoordinator {
     if (!stillLocked) {
       _clearAutoUnlockSuppression();
       _sessionState = DashboardSessionState.unlocked;
+      _hasWokenForCurrentCloseCycle = false;
       return;
     }
 
@@ -1646,6 +1818,7 @@ class AppCoordinator {
     }
     if (!stillLocked) {
       _sessionState = DashboardSessionState.unlocked;
+      _hasWokenForCurrentCloseCycle = false;
       _appendUnlockRetrySkipped('sessionNotLockedForRetry');
       return;
     }
@@ -1972,6 +2145,10 @@ class AppCoordinator {
     return platform.platformLabel.trim().toLowerCase() == 'macos';
   }
 
+  bool get _isWindowsPlatform {
+    return platform.platformLabel.trim().toLowerCase() == 'windows';
+  }
+
   bool get _isAutoUnlockPermissionSettingsAvailable {
     return _isMacPlatform &&
         platform.unlock.capability.kind ==
@@ -2053,6 +2230,20 @@ class _LoggedScanSample {
   final int rssi;
 }
 
+class _WindowsBleDeviceAlias {
+  const _WindowsBleDeviceAlias({
+    required this.deviceId,
+    required this.seenAt,
+  });
+
+  final String deviceId;
+  final DateTime seenAt;
+
+  _WindowsBleDeviceAlias seen(DateTime seenAt) {
+    return _WindowsBleDeviceAlias(deviceId: deviceId, seenAt: seenAt);
+  }
+}
+
 String _sessionEventLabel(SessionEventKind kind) {
   switch (kind) {
     case SessionEventKind.locked:
@@ -2093,6 +2284,144 @@ String? _normalizedText(String? value) {
     return null;
   }
   return text;
+}
+
+String? _normalizedStableText(Object? value) {
+  if (value is! String) {
+    return null;
+  }
+  final normalized = _normalizedText(value)?.toLowerCase();
+  if (normalized == null ||
+      normalized == 'unknown device' ||
+      normalized == 'unknown' ||
+      normalized == 'bluetooth' ||
+      normalized.startsWith('bluetooth ')) {
+    return null;
+  }
+  return normalized;
+}
+
+String? _stableBleName(BleScanEvent event) {
+  return _normalizedStableText(event.displayName) ??
+      _normalizedStableText(event.rawAdvertisement?['localName']);
+}
+
+Set<String> _serviceUuidSet(BleScanEvent event) {
+  final values = event.rawAdvertisement?['serviceUuids'];
+  if (values is! List) {
+    return const {};
+  }
+  return values
+      .whereType<String>()
+      .map((value) => value.trim().toLowerCase())
+      .where((value) => value.isNotEmpty)
+      .toSet();
+}
+
+Set<String> _manufacturerFingerprintSet(BleScanEvent event) {
+  final sections = event.rawAdvertisement?['manufacturerDataSections'];
+  if (sections is List) {
+    final fingerprints = <String>{};
+    for (final section in sections) {
+      if (section is! Map) {
+        continue;
+      }
+      final companyId = _manufacturerCompanyId(section);
+      final payloadHex = _rawString(section['payloadHex']) ??
+          _manufacturerDataHex(event.manufacturerData);
+      if (companyId == null || payloadHex == null || payloadHex.length < 8) {
+        continue;
+      }
+      fingerprints.add('$companyId:${_hexPrefix(payloadHex, 16)}');
+    }
+    return fingerprints;
+  }
+
+  final companyIds = _manufacturerCompanyIdSet(event);
+  final dataHex = _manufacturerDataHex(event.manufacturerData);
+  if (companyIds.isEmpty || dataHex == null || dataHex.length < 8) {
+    return const {};
+  }
+  return {
+    for (final companyId in companyIds) '$companyId:${_hexPrefix(dataHex, 16)}',
+  };
+}
+
+Set<String> _manufacturerCompanyIdSet(BleScanEvent event) {
+  final sections = event.rawAdvertisement?['manufacturerDataSections'];
+  if (sections is List) {
+    final ids = <String>{};
+    for (final section in sections) {
+      if (section is Map) {
+        final companyId = _manufacturerCompanyId(section);
+        if (companyId != null) {
+          ids.add(companyId);
+        }
+      }
+    }
+    if (ids.isNotEmpty) {
+      return ids;
+    }
+  }
+
+  final data = event.manufacturerData;
+  if (data == null || data.length < 2) {
+    return const {};
+  }
+  final companyId = data[0] | (data[1] << 8);
+  return {companyId.toString()};
+}
+
+String? _manufacturerCompanyId(Map section) {
+  final companyId = section['companyId'];
+  if (companyId is int) {
+    return companyId.toString();
+  }
+
+  final companyIdHex = _rawString(section['companyIdHex']);
+  if (companyIdHex == null) {
+    return null;
+  }
+  final trimmed = companyIdHex.toLowerCase().replaceFirst('0x', '');
+  final parsed = int.tryParse(trimmed, radix: 16);
+  return parsed?.toString();
+}
+
+String? _manufacturerDataHex(List<int>? data) {
+  if (data == null || data.isEmpty) {
+    return null;
+  }
+  final buffer = StringBuffer();
+  for (final byte in data) {
+    if (byte < 0 || byte > 255) {
+      return null;
+    }
+    buffer.write(byte.toRadixString(16).padLeft(2, '0'));
+  }
+  return buffer.toString();
+}
+
+String _hexPrefix(String value, int maxLength) {
+  final normalized =
+      value.replaceAll(RegExp(r'[^0-9a-fA-F]'), '').toLowerCase();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return normalized.substring(0, maxLength);
+}
+
+bool _hasIntersection(Set<String> left, Set<String> right) {
+  if (left.isEmpty || right.isEmpty) {
+    return false;
+  }
+  return left.any(right.contains);
+}
+
+String? _rawString(Object? value) {
+  if (value is! String) {
+    return null;
+  }
+  return _normalizedText(value);
 }
 
 String _presenceStateLabel(DevicePresenceState state) {

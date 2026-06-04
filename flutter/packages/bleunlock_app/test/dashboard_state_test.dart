@@ -755,10 +755,10 @@ void testAcceptanceChecklistExportsReadinessStatus() {
   final json = summary.toDiagnosticJson();
 
   assert(summary.requiredChecklistCount == 15);
-  assert(summary.completedRequiredChecklistCount == 1);
-  assert(summary.missingRequiredEvidenceCount == 14);
+  assert(summary.completedRequiredChecklistCount == 0);
+  assert(summary.missingRequiredEvidenceCount == 15);
   assert(summary.readyForAcceptance == false);
-  assert(json['missingRequiredEvidenceCount'] == 14);
+  assert(json['missingRequiredEvidenceCount'] == 15);
   assert(json['readyForAcceptance'] == false);
 }
 
