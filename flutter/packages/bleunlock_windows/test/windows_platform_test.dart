@@ -152,6 +152,7 @@ Future<void> testWindowsNativeExportsRawAdvertisementDiagnostics() async {
       'flutter/packages/bleunlock_windows/windows/bleunlock_windows_plugin.cpp';
   final source = File(sourcePath).readAsStringSync();
 
+  assert(source.contains('#include <winrt/Windows.Foundation.Collections.h>'));
   assert(source.contains('RawAdvertisementMap('));
   assert(source.contains('AdvertisementDataSections('));
   assert(source.contains('ManufacturerDataSections('));

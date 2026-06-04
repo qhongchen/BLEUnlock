@@ -58,6 +58,7 @@ Windows proximity wake is allowed to request the display and login surface, so W
 - The Windows native scan path now defaults to passive BLE scanning and removes background deep device-name resolution from the permanent monitoring path. The scanner only uses advertisement-local names and raw advertisement diagnostics, then releases the watcher on scan stop to avoid driving Windows Device Association service CPU, memory, and disk growth during long-running monitoring.
 - The Windows native plugin now compiles on Windows with the current fixes:
   - `flutter/encodable_value.h` included for encodable map/list values.
+  - `winrt/Windows.Foundation.Collections.h` included for WinRT collection iteration.
   - `/utf-8` enabled for the plugin target.
 
 ## Verified on Windows
