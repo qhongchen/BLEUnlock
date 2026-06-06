@@ -59,6 +59,7 @@ class WindowsBleIdentityProfile {
     this.displayName,
     this.addressHint,
     this.broadcastAddresses = const {},
+    this.deviceInformationIds = const {},
     this.serviceUuids = const {},
     this.manufacturerCompanyIds = const {},
     this.manufacturerFingerprints = const {},
@@ -72,6 +73,7 @@ class WindowsBleIdentityProfile {
       displayName: _stringValue(json['displayName']),
       addressHint: _stringValue(json['addressHint']),
       broadcastAddresses: _stringSet(json['broadcastAddresses']),
+      deviceInformationIds: _stringSet(json['deviceInformationIds']),
       serviceUuids: _stringSet(json['serviceUuids']),
       manufacturerCompanyIds: _stringSet(json['manufacturerCompanyIds']),
       manufacturerFingerprints: _stringSet(json['manufacturerFingerprints']),
@@ -83,6 +85,7 @@ class WindowsBleIdentityProfile {
   final String? displayName;
   final String? addressHint;
   final Set<String> broadcastAddresses;
+  final Set<String> deviceInformationIds;
   final Set<String> serviceUuids;
   final Set<String> manufacturerCompanyIds;
   final Set<String> manufacturerFingerprints;
@@ -95,6 +98,8 @@ class WindowsBleIdentityProfile {
       if (addressHint != null) 'addressHint': addressHint,
       if (broadcastAddresses.isNotEmpty)
         'broadcastAddresses': _sortedList(broadcastAddresses),
+      if (deviceInformationIds.isNotEmpty)
+        'deviceInformationIds': _sortedList(deviceInformationIds),
       if (serviceUuids.isNotEmpty) 'serviceUuids': _sortedList(serviceUuids),
       if (manufacturerCompanyIds.isNotEmpty)
         'manufacturerCompanyIds': _sortedList(manufacturerCompanyIds),
@@ -109,6 +114,7 @@ class WindowsBleIdentityProfile {
     String? displayName,
     String? addressHint,
     Set<String> broadcastAddresses = const {},
+    Set<String> deviceInformationIds = const {},
     Set<String> serviceUuids = const {},
     Set<String> manufacturerCompanyIds = const {},
     Set<String> manufacturerFingerprints = const {},
@@ -121,6 +127,10 @@ class WindowsBleIdentityProfile {
       broadcastAddresses: _boundedUnion(
         this.broadcastAddresses,
         broadcastAddresses,
+      ),
+      deviceInformationIds: _boundedUnion(
+        this.deviceInformationIds,
+        deviceInformationIds,
       ),
       serviceUuids: _boundedUnion(this.serviceUuids, serviceUuids),
       manufacturerCompanyIds: _boundedUnion(
@@ -274,6 +284,7 @@ Map<String, WindowsBleIdentityProfile> _windowsIdentityProfilesFromJson(
             displayName: profile.displayName,
             addressHint: profile.addressHint,
             broadcastAddresses: profile.broadcastAddresses,
+            deviceInformationIds: profile.deviceInformationIds,
             serviceUuids: profile.serviceUuids,
             manufacturerCompanyIds: profile.manufacturerCompanyIds,
             manufacturerFingerprints: profile.manufacturerFingerprints,

@@ -952,6 +952,13 @@ class AppCoordinator {
     final eventName = _stableBleName(event);
     final profileName = _normalizedStableText(profile.displayName);
     final hasNameMatch = eventName != null && eventName == profileName;
+    final hasDeviceInformationIdMatch = _hasIntersection(
+      profile.deviceInformationIds
+          .map((value) => value.trim().toLowerCase())
+          .where((value) => value.isNotEmpty)
+          .toSet(),
+      _windowsDeviceInformationIdSet(event),
+    );
     final hasServiceMatch = _hasIntersection(
       profile.serviceUuids,
       _serviceUuidSet(event),
@@ -965,13 +972,19 @@ class AppCoordinator {
       _manufacturerCompanyIdSet(event),
     );
 
-    if (!hasNameMatch && !hasServiceMatch && !hasManufacturerFingerprintMatch) {
+    if (!hasNameMatch &&
+        !hasDeviceInformationIdMatch &&
+        !hasServiceMatch &&
+        !hasManufacturerFingerprintMatch) {
       return 0;
     }
 
     var score = 0;
     if (hasNameMatch) {
       score += 6;
+    }
+    if (hasDeviceInformationIdMatch) {
+      score += 8;
     }
     if (hasServiceMatch) {
       score += 5;
@@ -1024,6 +1037,7 @@ class AppCoordinator {
         if (deviceAddress != null) deviceAddress,
         if (broadcastAddress != null) broadcastAddress,
       },
+      deviceInformationIds: _windowsDeviceInformationIdSet(event),
       serviceUuids: _serviceUuidSet(event),
       manufacturerCompanyIds: _manufacturerCompanyIdSet(event),
       manufacturerFingerprints: _manufacturerFingerprintSet(event),
@@ -1041,7 +1055,10 @@ class AppCoordinator {
       return null;
     }
     return _normalizedText(event.displayName) ??
-        _normalizedText(event.rawAdvertisement?['localName']?.toString());
+        _normalizedText(event.rawAdvertisement?['localName']?.toString()) ??
+        _normalizedText(
+          event.rawAdvertisement?['deviceInformationName']?.toString(),
+        );
   }
 
   BleScanEvent _copyScanEventWithDeviceId(
@@ -2526,7 +2543,8 @@ String? _normalizedStableText(Object? value) {
 
 String? _stableBleName(BleScanEvent event) {
   return _normalizedStableText(event.displayName) ??
-      _normalizedStableText(event.rawAdvertisement?['localName']);
+      _normalizedStableText(event.rawAdvertisement?['localName']) ??
+      _normalizedStableText(event.rawAdvertisement?['deviceInformationName']);
 }
 
 String? _windowsBroadcastAddress(BleScanEvent event) {
@@ -2562,6 +2580,13 @@ Set<String> _serviceUuidSet(BleScanEvent event) {
       .map((value) => value.trim().toLowerCase())
       .where((value) => value.isNotEmpty)
       .toSet();
+}
+
+Set<String> _windowsDeviceInformationIdSet(BleScanEvent event) {
+  final value = _normalizedText(
+    event.rawAdvertisement?['deviceInformationId']?.toString(),
+  );
+  return value == null ? const {} : {value.toLowerCase()};
 }
 
 Set<String> _manufacturerFingerprintSet(BleScanEvent event) {
@@ -2671,6 +2696,10 @@ bool _windowsIdentityProfileChanged(
       previous.displayName != next.displayName ||
       previous.addressHint != next.addressHint ||
       !_sameStringSet(previous.broadcastAddresses, next.broadcastAddresses) ||
+      !_sameStringSet(
+        previous.deviceInformationIds,
+        next.deviceInformationIds,
+      ) ||
       !_sameStringSet(previous.serviceUuids, next.serviceUuids) ||
       !_sameStringSet(
         previous.manufacturerCompanyIds,

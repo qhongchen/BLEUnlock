@@ -7,8 +7,11 @@
 #include <flutter/plugin_registrar_windows.h>
 #include <flutter/standard_method_codec.h>
 
+#include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <iomanip>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <shellapi.h>
@@ -20,6 +23,7 @@
 #include <windows.h>
 #include <winrt/Windows.Devices.Bluetooth.h>
 #include <winrt/Windows.Devices.Bluetooth.Advertisement.h>
+#include <winrt/Windows.Devices.Enumeration.h>
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Storage.Streams.h>
@@ -52,6 +56,9 @@ constexpr wchar_t kStartupRunKey[] =
 constexpr wchar_t kStartupValueName[] = L"BLEUnlock Flutter";
 constexpr UINT kTrayCallbackMessage = WM_APP + 42;
 constexpr UINT kScanEventMessage = WM_APP + 43;
+constexpr UINT_PTR kScanFlushTimerId = 42002;
+constexpr UINT kScanFlushIntervalMs = 1000;
+constexpr int64_t kScanDeviceRetentionMillis = 60000;
 constexpr UINT_PTR kTrayIconId = 1;
 constexpr UINT kTrayCommandOpenSettings = 1001;
 constexpr UINT kTrayCommandStartMonitoring = 1002;
@@ -61,6 +68,7 @@ constexpr UINT kTrayCommandQuit = 1005;
 
 using EventSink = flutter::EventSink<flutter::EncodableValue>;
 using BluetoothAddressType = winrt::Windows::Devices::Bluetooth::BluetoothAddressType;
+using BluetoothLEDevice = winrt::Windows::Devices::Bluetooth::BluetoothLEDevice;
 using BluetoothLEAdvertisement = winrt::Windows::Devices::Bluetooth::
     Advertisement::BluetoothLEAdvertisement;
 using BluetoothLEAdvertisementReceivedEventArgs = winrt::Windows::Devices::
@@ -73,8 +81,20 @@ using BluetoothLEAdvertisementType = winrt::Windows::Devices::Bluetooth::
     Advertisement::BluetoothLEAdvertisementType;
 using BluetoothLEScanningMode =
     winrt::Windows::Devices::Bluetooth::Advertisement::BluetoothLEScanningMode;
+using BluetoothSignalStrengthFilter =
+    winrt::Windows::Devices::Bluetooth::BluetoothSignalStrengthFilter;
+using DeviceInformation =
+    winrt::Windows::Devices::Enumeration::DeviceInformation;
+using DeviceInformationKind =
+    winrt::Windows::Devices::Enumeration::DeviceInformationKind;
+using DeviceInformationUpdate =
+    winrt::Windows::Devices::Enumeration::DeviceInformationUpdate;
+using DeviceWatcher = winrt::Windows::Devices::Enumeration::DeviceWatcher;
+using DeviceWatcherStatus =
+    winrt::Windows::Devices::Enumeration::DeviceWatcherStatus;
 using IBuffer = winrt::Windows::Storage::Streams::IBuffer;
 using DataReader = winrt::Windows::Storage::Streams::DataReader;
+using IReferenceInt16 = winrt::Windows::Foundation::IReference<int16_t>;
 
 const GUID kDisplayPowerGuid = GUID_CONSOLE_DISPLAY_STATE;
 
@@ -219,6 +239,26 @@ std::string AdvertisementTypeLabel(BluetoothLEAdvertisementType type) {
     }
 }
 
+bool IsAdvertisementConnectable(BluetoothLEAdvertisementType type) {
+    switch (type) {
+        case BluetoothLEAdvertisementType::ConnectableUndirected:
+        case BluetoothLEAdvertisementType::ConnectableDirected:
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool IsAdvertisementScannable(BluetoothLEAdvertisementType type) {
+    switch (type) {
+        case BluetoothLEAdvertisementType::ConnectableUndirected:
+        case BluetoothLEAdvertisementType::ScannableUndirected:
+            return true;
+        default:
+            return false;
+    }
+}
+
 std::string GuidToString(const winrt::guid &value) {
     std::ostringstream stream;
     stream << std::nouppercase << std::hex << std::setfill('0')
@@ -240,6 +280,13 @@ bool HasText(const std::string &value) {
     return value.find_first_not_of(" \t\r\n") != std::string::npos;
 }
 
+std::string ToLowerAscii(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
+    return value;
+}
+
 std::string TrimAsciiWhitespace(const std::string &value) {
     const auto first = value.find_first_not_of(" \t\r\n");
     if (first == std::string::npos) {
@@ -248,6 +295,148 @@ std::string TrimAsciiWhitespace(const std::string &value) {
 
     const auto last = value.find_last_not_of(" \t\r\n");
     return value.substr(first, last - first + 1);
+}
+
+bool IsUsefulDisplayName(const std::string &value) {
+    const auto normalized = ToLowerAscii(TrimAsciiWhitespace(value));
+    if (normalized.empty() || normalized == "unknown" ||
+        normalized == "unknown device" || normalized == "bluetooth") {
+        return false;
+    }
+    return normalized.rfind("bluetooth ", 0) != 0;
+}
+
+std::string FormatBluetoothAddressHintFromCompact(const std::string &address) {
+    if (address.size() != 12) {
+        return "";
+    }
+
+    std::ostringstream stream;
+    for (size_t index = 0; index < address.size(); index += 2) {
+        if (index > 0) {
+            stream << ":";
+        }
+        stream << address.substr(index, 2);
+    }
+    return stream.str();
+}
+
+std::string NormalizeBluetoothAddressText(const std::string &value) {
+    std::string result;
+    result.reserve(12);
+    for (const auto character : value) {
+        const auto byte = static_cast<unsigned char>(character);
+        if (std::isxdigit(byte)) {
+            result.push_back(static_cast<char>(std::toupper(byte)));
+        }
+    }
+    return result.size() == 12 ? result : "";
+}
+
+std::string NormalizeBluetoothAddressTypeText(const std::string &value) {
+    const auto normalized = ToLowerAscii(TrimAsciiWhitespace(value));
+    if (normalized.find("random") != std::string::npos || normalized == "1") {
+        return "random";
+    }
+    if (normalized.find("public") != std::string::npos || normalized == "0") {
+        return "public";
+    }
+    return "unspecified";
+}
+
+std::string DeviceKey(const std::string &address,
+                      const std::string &address_type) {
+    return address + "-" + NormalizeBluetoothAddressTypeText(address_type);
+}
+
+void AppendUniqueEncodableValues(flutter::EncodableList *target,
+                                 const flutter::EncodableList &source) {
+    for (const auto &item : source) {
+        if (std::find(target->begin(), target->end(), item) == target->end()) {
+            target->emplace_back(item);
+        }
+    }
+}
+
+bool LookupInspectableProperty(
+    const winrt::Windows::Foundation::Collections::IMapView<
+        winrt::hstring, winrt::Windows::Foundation::IInspectable> &properties,
+    const wchar_t *key,
+    winrt::Windows::Foundation::IInspectable *value) {
+    try {
+        const winrt::hstring property_key{key};
+        if (!properties.HasKey(property_key)) {
+            return false;
+        }
+        *value = properties.Lookup(property_key);
+        return *value != nullptr;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool LookupStringProperty(
+    const winrt::Windows::Foundation::Collections::IMapView<
+        winrt::hstring, winrt::Windows::Foundation::IInspectable> &properties,
+    const wchar_t *key,
+    std::string *value) {
+    winrt::Windows::Foundation::IInspectable property{nullptr};
+    if (!LookupInspectableProperty(properties, key, &property)) {
+        return false;
+    }
+
+    try {
+        *value = TrimAsciiWhitespace(
+            winrt::to_string(winrt::unbox_value<winrt::hstring>(property)));
+        return true;
+    } catch (...) {
+    }
+
+    try {
+        *value = std::to_string(winrt::unbox_value<int32_t>(property));
+        return true;
+    } catch (...) {
+    }
+
+    try {
+        *value = std::to_string(winrt::unbox_value<uint32_t>(property));
+        return true;
+    } catch (...) {
+    }
+
+    return false;
+}
+
+bool LookupBoolProperty(
+    const winrt::Windows::Foundation::Collections::IMapView<
+        winrt::hstring, winrt::Windows::Foundation::IInspectable> &properties,
+    const wchar_t *key,
+    bool *value) {
+    winrt::Windows::Foundation::IInspectable property{nullptr};
+    if (!LookupInspectableProperty(properties, key, &property)) {
+        return false;
+    }
+
+    try {
+        *value = winrt::unbox_value<bool>(property);
+        return true;
+    } catch (...) {
+    }
+
+    std::string text;
+    if (!LookupStringProperty(properties, key, &text)) {
+        return false;
+    }
+    const auto normalized = ToLowerAscii(text);
+    if (normalized == "true" || normalized == "1") {
+        *value = true;
+        return true;
+    }
+    if (normalized == "false" || normalized == "0") {
+        *value = false;
+        return true;
+    }
+    return false;
 }
 
 void EnsureWinrtApartment() {
@@ -262,6 +451,44 @@ void EnsureWinrtApartment() {
     } catch (...) {
         // Flutter may already initialize COM for the current thread.
     }
+}
+
+struct WindowsBleSeenDevice {
+    std::string address;
+    std::string address_hint;
+    std::string address_type = "unspecified";
+    std::string advertisement_type;
+    std::string local_name;
+    std::string device_information_name;
+    std::string device_information_id;
+    int32_t last_rssi = -127;
+    int64_t last_seen_millis = 0;
+    int64_t last_emitted_millis = 0;
+    int32_t packet_count = 0;
+    bool dirty = false;
+    bool scan_response_seen = false;
+    bool is_connectable = false;
+    bool is_scannable = false;
+    bool has_is_paired = false;
+    bool is_paired = false;
+    bool has_is_present = false;
+    bool is_present = false;
+    bool has_device_information_is_connectable = false;
+    bool device_information_is_connectable = false;
+    flutter::EncodableList manufacturer_data;
+    flutter::EncodableList manufacturer_data_sections;
+    flutter::EncodableList data_sections;
+    flutter::EncodableList service_uuids;
+};
+
+std::string BestDisplayName(const WindowsBleSeenDevice &device) {
+    if (IsUsefulDisplayName(device.local_name)) {
+        return TrimAsciiWhitespace(device.local_name);
+    }
+    if (IsUsefulDisplayName(device.device_information_name)) {
+        return TrimAsciiWhitespace(device.device_information_name);
+    }
+    return "";
 }
 
 flutter::EncodableList ManufacturerDataBytes(
@@ -334,72 +561,82 @@ flutter::EncodableList ServiceUuids(
     return result;
 }
 
-flutter::EncodableMap RawAdvertisementMap(
-    const BluetoothLEAdvertisementReceivedEventArgs &args,
-    const std::string &address,
-    const std::string &address_hint,
-    int64_t seen_at_millis,
-    const flutter::EncodableList &manufacturer_data) {
-    const auto advertisement = args.Advertisement();
-
+flutter::EncodableMap RawAdvertisementMap(const WindowsBleSeenDevice &device) {
     flutter::EncodableMap result;
     result[flutter::EncodableValue("bluetoothAddress")] =
-        flutter::EncodableValue(address);
+        flutter::EncodableValue(device.address);
     result[flutter::EncodableValue("bluetoothAddressHint")] =
-        flutter::EncodableValue(address_hint);
+        flutter::EncodableValue(device.address_hint);
     result[flutter::EncodableValue("bluetoothAddressType")] =
-        flutter::EncodableValue(BluetoothAddressTypeLabel(
-            args.BluetoothAddressType()));
+        flutter::EncodableValue(device.address_type);
     result[flutter::EncodableValue("advertisementType")] =
-        flutter::EncodableValue(
-            AdvertisementTypeLabel(args.AdvertisementType()));
+        flutter::EncodableValue(device.advertisement_type);
     result[flutter::EncodableValue("localName")] =
-        flutter::EncodableValue(winrt::to_string(advertisement.LocalName()));
+        flutter::EncodableValue(device.local_name);
     result[flutter::EncodableValue("rssi")] =
-        flutter::EncodableValue(static_cast<int32_t>(
-            args.RawSignalStrengthInDBm()));
+        flutter::EncodableValue(device.last_rssi);
     result[flutter::EncodableValue("seenAtMillis")] =
-        flutter::EncodableValue(seen_at_millis);
+        flutter::EncodableValue(device.last_seen_millis);
     result[flutter::EncodableValue("manufacturerData")] =
-        flutter::EncodableValue(manufacturer_data);
+        flutter::EncodableValue(device.manufacturer_data);
     result[flutter::EncodableValue("manufacturerDataSections")] =
-        flutter::EncodableValue(ManufacturerDataSections(advertisement));
+        flutter::EncodableValue(device.manufacturer_data_sections);
     result[flutter::EncodableValue("dataSections")] =
-        flutter::EncodableValue(AdvertisementDataSections(advertisement));
+        flutter::EncodableValue(device.data_sections);
     result[flutter::EncodableValue("serviceUuids")] =
-        flutter::EncodableValue(ServiceUuids(advertisement));
+        flutter::EncodableValue(device.service_uuids);
+    result[flutter::EncodableValue("identityKey")] =
+        flutter::EncodableValue(DeviceKey(device.address, device.address_type));
+    result[flutter::EncodableValue("packetCount")] =
+        flutter::EncodableValue(device.packet_count);
+    result[flutter::EncodableValue("scanResponseSeen")] =
+        flutter::EncodableValue(device.scan_response_seen);
+    result[flutter::EncodableValue("isConnectable")] =
+        flutter::EncodableValue(device.is_connectable ||
+                                device.device_information_is_connectable);
+    result[flutter::EncodableValue("isScannable")] =
+        flutter::EncodableValue(device.is_scannable);
+    result[flutter::EncodableValue("aggregationWindowMillis")] =
+        flutter::EncodableValue(static_cast<int32_t>(kScanFlushIntervalMs));
+    if (HasText(device.device_information_name)) {
+        result[flutter::EncodableValue("deviceInformationName")] =
+            flutter::EncodableValue(device.device_information_name);
+    }
+    if (HasText(device.device_information_id)) {
+        result[flutter::EncodableValue("deviceInformationId")] =
+            flutter::EncodableValue(device.device_information_id);
+    }
+    if (device.has_is_paired) {
+        result[flutter::EncodableValue("isPaired")] =
+            flutter::EncodableValue(device.is_paired);
+    }
+    if (device.has_is_present) {
+        result[flutter::EncodableValue("isPresent")] =
+            flutter::EncodableValue(device.is_present);
+    }
     return result;
 }
 
-flutter::EncodableMap ScanEventFromAdvertisement(
-    const BluetoothLEAdvertisementReceivedEventArgs &args) {
-    const auto bluetooth_address = args.BluetoothAddress();
-    const auto now_millis = CurrentTimeMillis();
-    const auto address = FormatBluetoothAddress(bluetooth_address);
-    const auto address_hint = FormatBluetoothAddressHint(bluetooth_address);
-    const auto advertisement = args.Advertisement();
-    const auto display_name =
-        TrimAsciiWhitespace(winrt::to_string(advertisement.LocalName()));
-    const auto manufacturer_data = ManufacturerDataBytes(advertisement);
-
+flutter::EncodableMap ScanEventFromSeenDevice(
+    const WindowsBleSeenDevice &device) {
     flutter::EncodableMap event;
-    event[flutter::EncodableValue("deviceId")] = flutter::EncodableValue(address);
+    event[flutter::EncodableValue("deviceId")] =
+        flutter::EncodableValue(device.address);
+    const auto display_name = BestDisplayName(device);
     if (HasText(display_name)) {
         event[flutter::EncodableValue("displayName")] =
             flutter::EncodableValue(display_name);
     }
     event[flutter::EncodableValue("addressHint")] =
-        flutter::EncodableValue(address_hint);
+        flutter::EncodableValue(device.address_hint);
     event[flutter::EncodableValue("rssi")] =
-        flutter::EncodableValue(static_cast<int32_t>(
-            args.RawSignalStrengthInDBm()));
+        flutter::EncodableValue(device.last_rssi);
     event[flutter::EncodableValue("seenAtMillis")] =
-        flutter::EncodableValue(now_millis);
+        flutter::EncodableValue(device.last_seen_millis);
     event[flutter::EncodableValue("manufacturerData")] =
-        flutter::EncodableValue(manufacturer_data);
+        flutter::EncodableValue(device.manufacturer_data);
     event[flutter::EncodableValue("rawAdvertisement")] =
-        flutter::EncodableValue(RawAdvertisementMap(
-            args, address, address_hint, now_millis, manufacturer_data));
+        flutter::EncodableValue(RawAdvertisementMap(device));
     return event;
 }
 
@@ -553,9 +790,14 @@ LRESULT CALLBACK PluginWindowProc(HWND hwnd,
 
 struct WindowsBleWatcherState {
     BluetoothLEAdvertisementWatcher watcher{nullptr};
+    DeviceWatcher device_watcher{nullptr};
     winrt::event_token received_token{};
+    winrt::event_token device_added_token{};
+    winrt::event_token device_updated_token{};
     bool is_started = false;
     bool active = false;
+    std::mutex devices_mutex;
+    std::map<std::string, WindowsBleSeenDevice> devices;
 };
 
 BleunlockWindowsPlugin::BleunlockWindowsPlugin()
@@ -725,6 +967,11 @@ LRESULT BleunlockWindowsPlugin::HandleWindowMessage(HWND hwnd,
                                                     LPARAM lparam) {
     if (message == kScanEventMessage) {
         FlushScanEvents();
+        return 0;
+    }
+
+    if (message == WM_TIMER && wparam == kScanFlushTimerId) {
+        FlushAggregatedScanEvents();
         return 0;
     }
 
@@ -993,10 +1240,41 @@ void BleunlockWindowsPlugin::StartScan(bool active) {
         ble_watcher_->watcher.ScanningMode(
             active ? BluetoothLEScanningMode::Active
                    : BluetoothLEScanningMode::Passive);
+        BluetoothSignalStrengthFilter signal_filter;
+        signal_filter.InRangeThresholdInDBm(
+            winrt::box_value(static_cast<int16_t>(-85)).as<IReferenceInt16>());
+        signal_filter.OutOfRangeThresholdInDBm(
+            winrt::box_value(static_cast<int16_t>(-90)).as<IReferenceInt16>());
+        signal_filter.OutOfRangeTimeout(std::chrono::seconds(5));
+        signal_filter.SamplingInterval(std::chrono::seconds(1));
+        ble_watcher_->watcher.SignalStrengthFilter(signal_filter);
         ble_watcher_->received_token = ble_watcher_->watcher.Received(
             [this](const BluetoothLEAdvertisementWatcher &,
                    const BluetoothLEAdvertisementReceivedEventArgs &args) {
-                QueueScanEvent(ScanEventFromAdvertisement(args));
+                const auto bluetooth_address = args.BluetoothAddress();
+                const auto address = FormatBluetoothAddress(bluetooth_address);
+                const auto address_hint =
+                    FormatBluetoothAddressHint(bluetooth_address);
+                const auto advertisement = args.Advertisement();
+                const auto advertisement_kind = args.AdvertisementType();
+                const auto advertisement_type =
+                    AdvertisementTypeLabel(advertisement_kind);
+                MergeAdvertisementSnapshot(
+                    address,
+                    address_hint,
+                    BluetoothAddressTypeLabel(args.BluetoothAddressType()),
+                    advertisement_type,
+                    TrimAsciiWhitespace(
+                        winrt::to_string(advertisement.LocalName())),
+                    static_cast<int32_t>(args.RawSignalStrengthInDBm()),
+                    CurrentTimeMillis(),
+                    advertisement_kind == BluetoothLEAdvertisementType::ScanResponse,
+                    IsAdvertisementConnectable(advertisement_kind),
+                    IsAdvertisementScannable(advertisement_kind),
+                    ManufacturerDataBytes(advertisement),
+                    ManufacturerDataSections(advertisement),
+                    AdvertisementDataSections(advertisement),
+                    ServiceUuids(advertisement));
             });
         ble_watcher_->active = active;
     }
@@ -1005,24 +1283,322 @@ void BleunlockWindowsPlugin::StartScan(bool active) {
         BluetoothLEAdvertisementWatcherStatus::Started) {
         ble_watcher_->watcher.Start();
     }
+    if (active) {
+        try {
+            StartDeviceWatcher();
+        } catch (...) {
+            StopDeviceWatcher();
+        }
+    } else {
+        StopDeviceWatcher();
+    }
+    if (registrar_window_ != nullptr) {
+        SetTimer(registrar_window_, kScanFlushTimerId, kScanFlushIntervalMs,
+                 nullptr);
+    }
     ble_watcher_->is_started = true;
 }
 
 void BleunlockWindowsPlugin::StopScan() {
-    if (ble_watcher_ == nullptr || !ble_watcher_->watcher) {
+    if (ble_watcher_ == nullptr) {
         return;
     }
 
-    if (ble_watcher_->watcher.Status() ==
+    StopDeviceWatcher();
+    if (registrar_window_ != nullptr) {
+        KillTimer(registrar_window_, kScanFlushTimerId);
+    }
+
+    if (ble_watcher_->watcher &&
+        ble_watcher_->watcher.Status() ==
         BluetoothLEAdvertisementWatcherStatus::Started) {
         ble_watcher_->watcher.Stop();
     }
-    if (ble_watcher_->received_token.value != 0) {
+    if (ble_watcher_->watcher && ble_watcher_->received_token.value != 0) {
         ble_watcher_->watcher.Received(ble_watcher_->received_token);
         ble_watcher_->received_token = {};
     }
     ble_watcher_->watcher = nullptr;
     ble_watcher_->is_started = false;
+    {
+        std::lock_guard<std::mutex> lock(ble_watcher_->devices_mutex);
+        ble_watcher_->devices.clear();
+    }
+}
+
+void BleunlockWindowsPlugin::StartDeviceWatcher() {
+    EnsureWinrtApartment();
+    if (ble_watcher_ == nullptr || ble_watcher_->device_watcher) {
+        return;
+    }
+
+    const auto selector = BluetoothLEDevice::GetDeviceSelectorFromPairingState(false);
+    auto requested_properties = winrt::single_threaded_vector<winrt::hstring>({
+        L"System.Devices.Aep.DeviceAddress",
+        L"System.Devices.Aep.IsPaired",
+        L"System.Devices.Aep.IsPresent",
+        L"System.Devices.Aep.Bluetooth.Le.IsConnectable",
+        L"System.Devices.Aep.Bluetooth.Le.AddressType",
+    });
+    ble_watcher_->device_watcher = DeviceInformation::CreateWatcher(
+        selector,
+        requested_properties.GetView(),
+        DeviceInformationKind::AssociationEndpoint);
+    ble_watcher_->device_added_token = ble_watcher_->device_watcher.Added(
+        [this](const DeviceWatcher &, const DeviceInformation &device_info) {
+            const auto properties = device_info.Properties();
+            std::string raw_address;
+            LookupStringProperty(properties, L"System.Devices.Aep.DeviceAddress",
+                                 &raw_address);
+            const auto address = NormalizeBluetoothAddressText(raw_address);
+            if (address.empty()) {
+                return;
+            }
+
+            std::string raw_address_type;
+            LookupStringProperty(
+                properties, L"System.Devices.Aep.Bluetooth.Le.AddressType",
+                &raw_address_type);
+            bool is_paired = false;
+            const auto has_is_paired = LookupBoolProperty(
+                properties, L"System.Devices.Aep.IsPaired", &is_paired);
+            bool is_present = false;
+            const auto has_is_present = LookupBoolProperty(
+                properties, L"System.Devices.Aep.IsPresent", &is_present);
+            bool is_connectable = false;
+            const auto has_is_connectable = LookupBoolProperty(
+                properties, L"System.Devices.Aep.Bluetooth.Le.IsConnectable",
+                &is_connectable);
+
+            MergeDeviceInformationSnapshot(
+                winrt::to_string(device_info.Id()),
+                TrimAsciiWhitespace(winrt::to_string(device_info.Name())),
+                address,
+                FormatBluetoothAddressHintFromCompact(address),
+                NormalizeBluetoothAddressTypeText(raw_address_type),
+                has_is_paired,
+                is_paired,
+                has_is_present,
+                is_present,
+                has_is_connectable,
+                is_connectable);
+        });
+    ble_watcher_->device_updated_token = ble_watcher_->device_watcher.Updated(
+        [this](const DeviceWatcher &, const DeviceInformationUpdate &update) {
+            const auto properties = update.Properties();
+            std::string raw_address;
+            LookupStringProperty(properties, L"System.Devices.Aep.DeviceAddress",
+                                 &raw_address);
+            const auto address = NormalizeBluetoothAddressText(raw_address);
+            if (address.empty()) {
+                return;
+            }
+
+            std::string raw_address_type;
+            LookupStringProperty(
+                properties, L"System.Devices.Aep.Bluetooth.Le.AddressType",
+                &raw_address_type);
+            bool is_paired = false;
+            const auto has_is_paired = LookupBoolProperty(
+                properties, L"System.Devices.Aep.IsPaired", &is_paired);
+            bool is_present = false;
+            const auto has_is_present = LookupBoolProperty(
+                properties, L"System.Devices.Aep.IsPresent", &is_present);
+            bool is_connectable = false;
+            const auto has_is_connectable = LookupBoolProperty(
+                properties, L"System.Devices.Aep.Bluetooth.Le.IsConnectable",
+                &is_connectable);
+
+            MergeDeviceInformationSnapshot(
+                winrt::to_string(update.Id()),
+                "",
+                address,
+                FormatBluetoothAddressHintFromCompact(address),
+                NormalizeBluetoothAddressTypeText(raw_address_type),
+                has_is_paired,
+                is_paired,
+                has_is_present,
+                is_present,
+                has_is_connectable,
+                is_connectable);
+        });
+    ble_watcher_->device_watcher.Start();
+}
+
+void BleunlockWindowsPlugin::StopDeviceWatcher() {
+    if (ble_watcher_ == nullptr || !ble_watcher_->device_watcher) {
+        return;
+    }
+
+    const auto status = ble_watcher_->device_watcher.Status();
+    if (status == DeviceWatcherStatus::Started ||
+        status == DeviceWatcherStatus::EnumerationCompleted) {
+        ble_watcher_->device_watcher.Stop();
+    }
+    if (ble_watcher_->device_added_token.value != 0) {
+        ble_watcher_->device_watcher.Added(ble_watcher_->device_added_token);
+        ble_watcher_->device_added_token = {};
+    }
+    if (ble_watcher_->device_updated_token.value != 0) {
+        ble_watcher_->device_watcher.Updated(
+            ble_watcher_->device_updated_token);
+        ble_watcher_->device_updated_token = {};
+    }
+    ble_watcher_->device_watcher = nullptr;
+}
+
+void BleunlockWindowsPlugin::MergeAdvertisementSnapshot(
+    const std::string &address,
+    const std::string &address_hint,
+    const std::string &address_type,
+    const std::string &advertisement_type,
+    const std::string &local_name,
+    int32_t rssi,
+    int64_t seen_at_millis,
+    bool scan_response,
+    bool is_connectable,
+    bool is_scannable,
+    flutter::EncodableList manufacturer_data,
+    flutter::EncodableList manufacturer_sections,
+    flutter::EncodableList data_sections,
+    flutter::EncodableList service_uuids) {
+    if (ble_watcher_ == nullptr || address.empty()) {
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(ble_watcher_->devices_mutex);
+        auto key = DeviceKey(address, address_type);
+        for (const auto &entry : ble_watcher_->devices) {
+            if (entry.second.address == address) {
+                key = entry.first;
+                break;
+            }
+        }
+        auto &device = ble_watcher_->devices[key];
+        device.address = address;
+        device.address_hint = address_hint;
+        device.address_type = NormalizeBluetoothAddressTypeText(address_type);
+        device.advertisement_type = advertisement_type;
+        device.last_rssi = rssi;
+        device.last_seen_millis = seen_at_millis;
+        device.packet_count += 1;
+        device.scan_response_seen = device.scan_response_seen || scan_response;
+        device.is_connectable = device.is_connectable || is_connectable;
+        device.is_scannable = device.is_scannable || is_scannable;
+        if (IsUsefulDisplayName(local_name)) {
+            device.local_name = TrimAsciiWhitespace(local_name);
+        }
+        if (!manufacturer_data.empty()) {
+            device.manufacturer_data = std::move(manufacturer_data);
+        }
+        AppendUniqueEncodableValues(
+            &device.manufacturer_data_sections, manufacturer_sections);
+        AppendUniqueEncodableValues(&device.data_sections, data_sections);
+        AppendUniqueEncodableValues(&device.service_uuids, service_uuids);
+        device.dirty = true;
+    }
+    if (registrar_window_ == nullptr) {
+        FlushAggregatedScanEvents();
+    }
+}
+
+void BleunlockWindowsPlugin::MergeDeviceInformationSnapshot(
+    const std::string &device_information_id,
+    const std::string &device_information_name,
+    const std::string &address,
+    const std::string &address_hint,
+    const std::string &address_type,
+    bool has_is_paired,
+    bool is_paired,
+    bool has_is_present,
+    bool is_present,
+    bool has_is_connectable,
+    bool is_connectable) {
+    if (ble_watcher_ == nullptr || address.empty()) {
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(ble_watcher_->devices_mutex);
+        auto key = DeviceKey(address, address_type);
+        if (NormalizeBluetoothAddressTypeText(address_type) == "unspecified") {
+            for (const auto &entry : ble_watcher_->devices) {
+                if (entry.second.address == address) {
+                    key = entry.first;
+                    break;
+                }
+            }
+        }
+
+        auto &device = ble_watcher_->devices[key];
+        device.address = address;
+        device.address_hint =
+            HasText(address_hint) ? address_hint : FormatBluetoothAddressHintFromCompact(address);
+        if (device.address_type == "unspecified") {
+            device.address_type = NormalizeBluetoothAddressTypeText(address_type);
+        }
+        if (IsUsefulDisplayName(device_information_name)) {
+            device.device_information_name =
+                TrimAsciiWhitespace(device_information_name);
+        }
+        if (HasText(device_information_id)) {
+            device.device_information_id =
+                TrimAsciiWhitespace(device_information_id);
+        }
+        if (device.last_seen_millis == 0) {
+            device.last_seen_millis = CurrentTimeMillis();
+        }
+        if (has_is_paired) {
+            device.has_is_paired = true;
+            device.is_paired = is_paired;
+        }
+        if (has_is_present) {
+            device.has_is_present = true;
+            device.is_present = is_present;
+        }
+        if (has_is_connectable) {
+            device.has_device_information_is_connectable = true;
+            device.device_information_is_connectable = is_connectable;
+        }
+        device.dirty = true;
+    }
+    if (registrar_window_ == nullptr) {
+        FlushAggregatedScanEvents();
+    }
+}
+
+void BleunlockWindowsPlugin::FlushAggregatedScanEvents() {
+    if (ble_watcher_ == nullptr) {
+        return;
+    }
+
+    std::vector<flutter::EncodableValue> events;
+    const auto now_millis = CurrentTimeMillis();
+    {
+        std::lock_guard<std::mutex> lock(ble_watcher_->devices_mutex);
+        for (auto iterator = ble_watcher_->devices.begin();
+             iterator != ble_watcher_->devices.end();) {
+            auto &device = iterator->second;
+            if (device.last_seen_millis > 0 &&
+                now_millis - device.last_seen_millis >
+                    kScanDeviceRetentionMillis) {
+                iterator = ble_watcher_->devices.erase(iterator);
+                continue;
+            }
+            if (device.packet_count > 0 && device.dirty) {
+                events.emplace_back(
+                    flutter::EncodableValue(ScanEventFromSeenDevice(device)));
+                device.dirty = false;
+                device.last_emitted_millis = now_millis;
+            }
+            ++iterator;
+        }
+    }
+
+    for (const auto &event : events) {
+        EmitScanEvent(event);
+    }
 }
 
 flutter::EncodableValue BleunlockWindowsPlugin::GetScannerCapability() {

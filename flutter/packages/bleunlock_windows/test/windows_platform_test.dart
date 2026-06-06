@@ -115,7 +115,11 @@ Future<void> testWindowsNativeKeepsPermanentScanPathLightweight() async {
   assert(!source.contains('nameResolution'));
   assert(source.contains('args.BluetoothAddressType()'));
   assert(source.contains('advertisement.LocalName()'));
-  assert(source.contains('if (HasText(display_name))'));
+  assert(source.contains('BluetoothSignalStrengthFilter signal_filter;'));
+  assert(source.contains('SetTimer(registrar_window_, kScanFlushTimerId'));
+  assert(source.contains('FlushAggregatedScanEvents();'));
+  assert(source.contains('MergeAdvertisementSnapshot('));
+  assert(!source.contains('QueueScanEvent(ScanEventFromAdvertisement'));
   assert(source.contains(
     'event[flutter::EncodableValue("displayName")] =',
   ));
@@ -130,6 +134,9 @@ Future<void> testWindowsNativeUsesPassiveBleScanningByDefault() async {
   assert(source.contains('mode == "active"'));
   assert(source.contains('StartScan(active)'));
   assert(source.contains('ble_watcher_->active != active'));
+  assert(source.contains('if (active)'));
+  assert(source.contains('StartDeviceWatcher();'));
+  assert(source.contains('StopDeviceWatcher();'));
   assert(source.contains(
     'ble_watcher_->watcher.Received(ble_watcher_->received_token);',
   ));
@@ -147,6 +154,7 @@ Future<void> testWindowsNativeFormatsAddressHintForDiagnostics() async {
   assert(source.contains('event[flutter::EncodableValue("addressHint")]'));
   assert(source.contains('FormatBluetoothAddress(bluetooth_address)'));
   assert(source.contains('FormatBluetoothAddressHint(bluetooth_address)'));
+  assert(source.contains('DeviceKey(device.address, device.address_type)'));
 }
 
 Future<void> testWindowsNativeExportsRawAdvertisementDiagnostics() async {
@@ -166,6 +174,15 @@ Future<void> testWindowsNativeExportsRawAdvertisementDiagnostics() async {
   assert(source.contains('"manufacturerDataSections"'));
   assert(source.contains('"dataSections"'));
   assert(source.contains('"serviceUuids"'));
+  assert(source.contains('"scanResponseSeen"'));
+  assert(source.contains('"packetCount"'));
+  assert(source.contains('"deviceInformationName"'));
+  assert(source.contains('"deviceInformationId"'));
+  assert(source.contains('BluetoothLEAdvertisementType::ScanResponse'));
+  assert(source.contains('DeviceInformation::CreateWatcher'));
+  assert(source.contains(
+    'BluetoothLEDevice::GetDeviceSelectorFromPairingState(false)',
+  ));
   assert(!source.contains('"nameResolution"'));
   assert(!source.contains('NameResolutionMap('));
 }
@@ -273,6 +290,11 @@ Future<void> testWindowsScannerMapsNativeAdvertisementEvents() async {
         'manufacturerData': [7, 8, 9],
         'rawAdvertisement': {
           'localName': 'Xiaomi Smart Band',
+          'deviceInformationName': 'Xiaomi Smart Band 9',
+          'deviceInformationId':
+              r'BluetoothLE#BluetoothLE00:11:22:33:44:55-aa:bb:cc:dd:ee:ff',
+          'packetCount': 3,
+          'scanResponseSeen': true,
           'manufacturerDataSections': [
             {
               'companyId': 76,
@@ -307,6 +329,10 @@ Future<void> testWindowsScannerMapsNativeAdvertisementEvents() async {
   assert(event.seenAt == DateTime.fromMillisecondsSinceEpoch(1779943200000));
   assert(event.manufacturerData!.length == 3);
   assert(event.rawAdvertisement?['localName'] == 'Xiaomi Smart Band');
+  assert(event.rawAdvertisement?['deviceInformationName'] ==
+      'Xiaomi Smart Band 9');
+  assert(event.rawAdvertisement?['packetCount'] == 3);
+  assert(event.rawAdvertisement?['scanResponseSeen'] == true);
   assert(
     (event.rawAdvertisement?['serviceUuids'] as List<Object?>).single ==
         '0000180f-0000-1000-8000-00805f9b34fb',

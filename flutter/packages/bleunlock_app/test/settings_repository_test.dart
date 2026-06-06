@@ -28,6 +28,20 @@ Future<void> testSecureStoreRepositoryRoundTripsSettings() async {
         rssiWindowSize: 3,
       ),
       selectedDeviceIds: {'band-1', 'phone-1'},
+      windowsIdentityProfiles: {
+        'band-1': WindowsBleIdentityProfile(
+          deviceId: 'band-1',
+          displayName: 'Xiaomi Smart Band',
+          addressHint: 'AA:BB:CC:DD:EE:FF',
+          broadcastAddresses: {'aabbccddeeff'},
+          deviceInformationIds: {
+            r'bluetoothle#bluetoothle00:11:22:33:44:55-aa:bb:cc:dd:ee:ff',
+          },
+          serviceUuids: {'0000180f-0000-1000-8000-00805f9b34fb'},
+          manufacturerCompanyIds: {'76'},
+          manufacturerFingerprints: {'76:4c001005'},
+        ),
+      },
     ),
   );
 
@@ -49,6 +63,11 @@ Future<void> testSecureStoreRepositoryRoundTripsSettings() async {
   assert(loaded.selectedDeviceIds.length == 2);
   assert(loaded.selectedDeviceIds.contains('band-1'));
   assert(loaded.selectedDeviceIds.contains('phone-1'));
+  final profile = loaded.windowsIdentityProfiles['band-1']!;
+  assert(profile.displayName == 'Xiaomi Smart Band');
+  assert(profile.deviceInformationIds.single ==
+      r'bluetoothle#bluetoothle00:11:22:33:44:55-aa:bb:cc:dd:ee:ff');
+  assert(profile.serviceUuids.single == '0000180f-0000-1000-8000-00805f9b34fb');
 }
 
 Future<void> testSecureStoreRepositoryReturnsNullForMissingSettings() async {
