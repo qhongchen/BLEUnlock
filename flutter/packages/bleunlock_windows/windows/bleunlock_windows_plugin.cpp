@@ -95,6 +95,7 @@ using DeviceWatcherStatus =
 using IBuffer = winrt::Windows::Storage::Streams::IBuffer;
 using DataReader = winrt::Windows::Storage::Streams::DataReader;
 using IReferenceInt16 = winrt::Windows::Foundation::IReference<int16_t>;
+using TimeSpan = winrt::Windows::Foundation::TimeSpan;
 
 const GUID kDisplayPowerGuid = GUID_CONSOLE_DISPLAY_STATE;
 
@@ -107,6 +108,10 @@ std::mutex g_plugin_instance_mutex;
 int64_t CurrentTimeMillis() {
     const auto now = std::chrono::system_clock::now().time_since_epoch();
     return std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
+}
+
+TimeSpan SecondsToTimeSpan(int64_t seconds) {
+    return std::chrono::duration_cast<TimeSpan>(std::chrono::seconds(seconds));
 }
 
 void PulseUserInputForWake() {
@@ -1245,8 +1250,8 @@ void BleunlockWindowsPlugin::StartScan(bool active) {
             winrt::box_value(static_cast<int16_t>(-85)).as<IReferenceInt16>());
         signal_filter.OutOfRangeThresholdInDBm(
             winrt::box_value(static_cast<int16_t>(-90)).as<IReferenceInt16>());
-        signal_filter.OutOfRangeTimeout(std::chrono::seconds(5));
-        signal_filter.SamplingInterval(std::chrono::seconds(1));
+        signal_filter.OutOfRangeTimeout(SecondsToTimeSpan(5));
+        signal_filter.SamplingInterval(SecondsToTimeSpan(1));
         ble_watcher_->watcher.SignalStrengthFilter(signal_filter);
         ble_watcher_->received_token = ble_watcher_->watcher.Received(
             [this](const BluetoothLEAdvertisementWatcher &,
