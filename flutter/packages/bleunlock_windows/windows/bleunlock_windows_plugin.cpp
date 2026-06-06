@@ -471,6 +471,8 @@ struct WindowsBleSeenDevice {
     int64_t last_emitted_millis = 0;
     int32_t packet_count = 0;
     bool dirty = false;
+    bool advertisement_dirty = false;
+    bool device_information_dirty = false;
     bool scan_response_seen = false;
     bool is_connectable = false;
     bool is_scannable = false;
@@ -566,8 +568,14 @@ flutter::EncodableList ServiceUuids(
     return result;
 }
 
-flutter::EncodableMap RawAdvertisementMap(const WindowsBleSeenDevice &device) {
+flutter::EncodableMap RawAdvertisementMap(const WindowsBleSeenDevice &device,
+                                          const std::string &source,
+                                          int32_t event_rssi) {
     flutter::EncodableMap result;
+    result[flutter::EncodableValue("source")] =
+        flutter::EncodableValue(source);
+    result[flutter::EncodableValue("hasAdvertisement")] =
+        flutter::EncodableValue(device.packet_count > 0);
     result[flutter::EncodableValue("bluetoothAddress")] =
         flutter::EncodableValue(device.address);
     result[flutter::EncodableValue("bluetoothAddressHint")] =
@@ -579,7 +587,7 @@ flutter::EncodableMap RawAdvertisementMap(const WindowsBleSeenDevice &device) {
     result[flutter::EncodableValue("localName")] =
         flutter::EncodableValue(device.local_name);
     result[flutter::EncodableValue("rssi")] =
-        flutter::EncodableValue(device.last_rssi);
+        flutter::EncodableValue(event_rssi);
     result[flutter::EncodableValue("seenAtMillis")] =
         flutter::EncodableValue(device.last_seen_millis);
     result[flutter::EncodableValue("manufacturerData")] =
@@ -623,8 +631,13 @@ flutter::EncodableMap RawAdvertisementMap(const WindowsBleSeenDevice &device) {
 }
 
 flutter::EncodableMap ScanEventFromSeenDevice(
-    const WindowsBleSeenDevice &device) {
+    const WindowsBleSeenDevice &device,
+    bool advertisement_event) {
     flutter::EncodableMap event;
+    const auto source =
+        advertisement_event ? std::string("advertisement")
+                            : std::string("deviceInformation");
+    const auto event_rssi = advertisement_event ? device.last_rssi : -127;
     event[flutter::EncodableValue("deviceId")] =
         flutter::EncodableValue(device.address);
     const auto display_name = BestDisplayName(device);
@@ -635,13 +648,13 @@ flutter::EncodableMap ScanEventFromSeenDevice(
     event[flutter::EncodableValue("addressHint")] =
         flutter::EncodableValue(device.address_hint);
     event[flutter::EncodableValue("rssi")] =
-        flutter::EncodableValue(device.last_rssi);
+        flutter::EncodableValue(event_rssi);
     event[flutter::EncodableValue("seenAtMillis")] =
         flutter::EncodableValue(device.last_seen_millis);
     event[flutter::EncodableValue("manufacturerData")] =
         flutter::EncodableValue(device.manufacturer_data);
     event[flutter::EncodableValue("rawAdvertisement")] =
-        flutter::EncodableValue(RawAdvertisementMap(device));
+        flutter::EncodableValue(RawAdvertisementMap(device, source, event_rssi));
     return event;
 }
 
@@ -1502,6 +1515,7 @@ void BleunlockWindowsPlugin::MergeAdvertisementSnapshot(
         AppendUniqueEncodableValues(&device.data_sections, data_sections);
         AppendUniqueEncodableValues(&device.service_uuids, service_uuids);
         device.dirty = true;
+        device.advertisement_dirty = true;
     }
     if (registrar_window_ == nullptr) {
         FlushAggregatedScanEvents();
@@ -1567,6 +1581,7 @@ void BleunlockWindowsPlugin::MergeDeviceInformationSnapshot(
             device.device_information_is_connectable = is_connectable;
         }
         device.dirty = true;
+        device.device_information_dirty = true;
     }
     if (registrar_window_ == nullptr) {
         FlushAggregatedScanEvents();
@@ -1591,10 +1606,17 @@ void BleunlockWindowsPlugin::FlushAggregatedScanEvents() {
                 iterator = ble_watcher_->devices.erase(iterator);
                 continue;
             }
-            if (device.packet_count > 0 && device.dirty) {
+            const auto should_emit_advertisement =
+                device.packet_count > 0 && device.advertisement_dirty;
+            const auto should_emit_device_information =
+                !device.advertisement_dirty && device.device_information_dirty;
+            if (should_emit_advertisement || should_emit_device_information) {
                 events.emplace_back(
-                    flutter::EncodableValue(ScanEventFromSeenDevice(device)));
+                    flutter::EncodableValue(ScanEventFromSeenDevice(
+                        device, should_emit_advertisement)));
                 device.dirty = false;
+                device.advertisement_dirty = false;
+                device.device_information_dirty = false;
                 device.last_emitted_millis = now_millis;
             }
             ++iterator;

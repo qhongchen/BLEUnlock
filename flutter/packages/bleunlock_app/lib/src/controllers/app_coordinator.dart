@@ -738,6 +738,7 @@ class AppCoordinator {
     if (_latestScanAt == null || event.seenAt.isAfter(_latestScanAt!)) {
       _latestScanAt = event.seenAt;
     }
+    final hasAdvertisement = _hasWindowsAdvertisement(event);
     final isNewDevice = !_visibleDevices.containsKey(event.deviceId);
     final mergedEvent = _mergeScanEvent(_visibleDevices[event.deviceId], event);
     _visibleDevices[event.deviceId] = mergedEvent;
@@ -749,6 +750,16 @@ class AppCoordinator {
       } else {
         _scheduleDeviceListRefresh();
         _publish(_visibleDeviceListDecision);
+      }
+      return;
+    }
+    if (!hasAdvertisement) {
+      _appendScanLogIfUseful(mergedEvent);
+      if (isNewDevice) {
+        _publishDeviceList(mergedEvent.seenAt);
+      } else {
+        _scheduleDeviceListRefresh();
+        _publish(_lastDecision ?? _visibleDeviceListDecision);
       }
       return;
     }
@@ -779,13 +790,16 @@ class AppCoordinator {
           _normalizedText(previous.displayName),
       addressHint: _preferredAddressHint(
           previous.addressHint, next.addressHint, next.deviceId),
-      rssi: next.rssi,
+      rssi: _hasWindowsAdvertisement(next) ? next.rssi : previous.rssi,
       seenAt: next.seenAt,
       manufacturerData: _preferredManufacturerData(
         previous.manufacturerData,
         next.manufacturerData,
       ),
-      rawAdvertisement: next.rawAdvertisement ?? previous.rawAdvertisement,
+      rawAdvertisement: _mergeRawAdvertisement(
+        previous.rawAdvertisement,
+        next.rawAdvertisement,
+      ),
     );
   }
 
@@ -821,7 +835,7 @@ class AppCoordinator {
       displayName: _normalizedText(event.displayName),
       addressHint: _normalizedText(event.addressHint),
       deviceId: alias,
-      rssi: event.rssi,
+      rssi: _hasWindowsAdvertisement(event) ? event.rssi : null,
       reason: 'windowsBleIdentityAlias',
       manufacturerData: event.manufacturerData,
       rawAdvertisement: event.rawAdvertisement,
@@ -1086,6 +1100,32 @@ class AppCoordinator {
     return normalizedPrevious ?? normalizedNext;
   }
 
+  Map<String, Object?>? _mergeRawAdvertisement(
+    Map<String, Object?>? previous,
+    Map<String, Object?>? next,
+  ) {
+    if (previous == null) {
+      return next;
+    }
+    if (next == null) {
+      return previous;
+    }
+    return {
+      ...previous,
+      ...next,
+      if (_rawBool(previous['hasAdvertisement']) == true)
+        'hasAdvertisement': true,
+      if (_rawInt(previous['packetCount']) > _rawInt(next['packetCount']))
+        'packetCount': previous['packetCount'],
+      if (_rawString(next['source']) == 'deviceInformation' &&
+          _rawBool(previous['hasAdvertisement']) == true)
+        'source': previous['source'],
+      if (_rawString(next['source']) == 'deviceInformation' &&
+          _rawBool(previous['hasAdvertisement']) == true)
+        'rssi': previous['rssi'],
+    };
+  }
+
   List<int>? _preferredManufacturerData(List<int>? previous, List<int>? next) {
     if (next != null && next.isNotEmpty) {
       return next;
@@ -1242,7 +1282,7 @@ class AppCoordinator {
         platformId: event.deviceId,
         displayName: _normalizedText(event.displayName),
         addressHint: _normalizedText(event.addressHint),
-        lastRssi: event.rssi,
+        lastRssi: _hasWindowsAdvertisement(event) ? event.rssi : null,
         lastSeenAt: event.seenAt,
         manufacturerData: event.manufacturerData,
         rawAdvertisement: event.rawAdvertisement,
@@ -1460,6 +1500,7 @@ class AppCoordinator {
       case SessionEventKind.locked:
         _sessionState = DashboardSessionState.locked;
         _hasLoggedAlreadyLockedSkip = false;
+        _suspendAutoUnlockAfterSessionLockIfDeviceClose();
       case SessionEventKind.displaySleep:
         _sessionState = DashboardSessionState.displaySleep;
         _hasLoggedAlreadyLockedSkip = false;
@@ -1711,6 +1752,7 @@ class AppCoordinator {
       await platform.session.lock();
       _sessionState = DashboardSessionState.locked;
       _hasLoggedAlreadyLockedSkip = false;
+      _suspendAutoUnlockUntilDeviceLeaves('proximityLock');
       _lastActionLabel = 'Locked screen';
       _appendLog(
         timestamp: timestamp,
@@ -2220,10 +2262,18 @@ class AppCoordinator {
     final candidates =
         selectedDevices.isEmpty ? _visibleDevices.values : selectedDevices;
     final event = candidates.reduce(_betterRecentDevice);
+    if (!_hasWindowsAdvertisement(event)) {
+      return '${_trayDeviceName(event)} system discovery';
+    }
     return '${_trayDeviceName(event)} ${event.rssi} dBm';
   }
 
   BleScanEvent _betterRecentDevice(BleScanEvent left, BleScanEvent right) {
+    final leftHasAdvertisement = _hasWindowsAdvertisement(left);
+    final rightHasAdvertisement = _hasWindowsAdvertisement(right);
+    if (leftHasAdvertisement != rightHasAdvertisement) {
+      return rightHasAdvertisement ? right : left;
+    }
     if (right.rssi != left.rssi) {
       return right.rssi > left.rssi ? right : left;
     }
@@ -2260,6 +2310,13 @@ class AppCoordinator {
   }
 
   bool _shouldLogScan(BleScanEvent event) {
+    if (!_hasWindowsAdvertisement(event)) {
+      if (_lastLoggedScanSamples.containsKey(event.deviceId)) {
+        return false;
+      }
+      _lastLoggedScanSamples[event.deviceId] = _LoggedScanSample(event);
+      return true;
+    }
     final lastSample = _lastLoggedScanSamples[event.deviceId];
     if (lastSample == null) {
       _lastLoggedScanSamples[event.deviceId] = _LoggedScanSample(event);
@@ -2278,15 +2335,18 @@ class AppCoordinator {
   }
 
   void _appendScanLog(BleScanEvent event) {
+    final hasAdvertisement = _hasWindowsAdvertisement(event);
     _appendLog(
       timestamp: event.seenAt,
       category: DashboardLogCategory.scan,
-      message: 'Scan ${event.deviceId} ${event.rssi} dBm',
+      message: hasAdvertisement
+          ? 'Scan ${event.deviceId} ${event.rssi} dBm'
+          : 'Scan ${event.deviceId} system discovery',
       displayName: event.displayName,
       addressHint: event.addressHint,
       deviceId: event.deviceId,
-      rssi: event.rssi,
-      reason: 'bleAdvertisement',
+      rssi: hasAdvertisement ? event.rssi : null,
+      reason: hasAdvertisement ? 'bleAdvertisement' : 'deviceInformation',
       manufacturerData: event.manufacturerData,
       rawAdvertisement: event.rawAdvertisement,
       sessionState: _sessionState,
@@ -2398,6 +2458,16 @@ class AppCoordinator {
   bool get _isSessionLocked => _sessionState.isLockedLike;
 
   bool get _isAutoUnlockSuppressed => _autoUnlockSuppressionReason != null;
+
+  void _suspendAutoUnlockAfterSessionLockIfDeviceClose() {
+    final decision = _lastDecision;
+    if (decision == null ||
+        _isAutoUnlockSuppressed ||
+        !_hasCloseTrackedDevice(decision)) {
+      return;
+    }
+    _suspendAutoUnlockUntilDeviceLeaves('sessionLockWhileDeviceClose');
+  }
 
   void _suspendAutoUnlockUntilDeviceLeaves(String reason) {
     _autoUnlockSuppressionReason = reason;
@@ -2723,6 +2793,52 @@ String? _rawString(Object? value) {
     return null;
   }
   return _normalizedText(value);
+}
+
+bool _rawBool(Object? value) {
+  if (value is bool) {
+    return value;
+  }
+  if (value is String) {
+    final normalized = value.trim().toLowerCase();
+    if (normalized == 'true' || normalized == '1') {
+      return true;
+    }
+    if (normalized == 'false' || normalized == '0') {
+      return false;
+    }
+  }
+  return false;
+}
+
+int _rawInt(Object? value) {
+  if (value is int) {
+    return value;
+  }
+  if (value is num) {
+    return value.toInt();
+  }
+  if (value is String) {
+    return int.tryParse(value.trim()) ?? 0;
+  }
+  return 0;
+}
+
+bool _hasWindowsAdvertisement(BleScanEvent event) {
+  final rawAdvertisement = event.rawAdvertisement;
+  if (rawAdvertisement == null) {
+    return true;
+  }
+  if (_rawString(rawAdvertisement['source']) == 'deviceInformation') {
+    return false;
+  }
+  if (rawAdvertisement.containsKey('hasAdvertisement')) {
+    return _rawBool(rawAdvertisement['hasAdvertisement']);
+  }
+  if (rawAdvertisement.containsKey('packetCount')) {
+    return _rawInt(rawAdvertisement['packetCount']) > 0;
+  }
+  return true;
 }
 
 String _presenceStateLabel(DevicePresenceState state) {

@@ -16,6 +16,7 @@ Future<void> main() async {
   await testCoordinatorMarksScanLogsWithSessionState();
   await testCoordinatorLogsDeviceStateReasons();
   await testCoordinatorLocksWhenSelectedDeviceStaysAway();
+  await testCoordinatorSuppressesAutoUnlockAfterProximityLockUntilDeviceLeaves();
   await testCoordinatorLocksWhenVisibleSelectedDeviceIsAwayWithStaleSelection();
   await testCoordinatorHandlesUnsupportedUnlockWithoutCallingPlatform();
   await testCoordinatorSkipsAutomaticUnlockWhenSessionIsNotLocked();
@@ -72,6 +73,7 @@ Future<void> main() async {
   await testCoordinatorRetriesStillLockedUnlockFailures();
   await testCoordinatorDelaysUnlockBrieflyAfterWakeRequest();
   await testCoordinatorUnlocksAfterLockedEventWhenDeviceReturnsClose();
+  await testCoordinatorSuppressesAutoUnlockAfterSessionLockWhileDeviceClose();
   await testCoordinatorWakesOnlyOncePerCloseCycleWhileLocked();
   await testCoordinatorSuppressesAutoUnlockAfterManualLockUntilDeviceLeaves();
   await testCoordinatorSuppressesRepeatedWakeUnlockAfterUnlockFailure();
@@ -604,6 +606,89 @@ Future<void> testCoordinatorLocksWhenSelectedDeviceStaysAway() async {
   assert(state.logs.any((entry) => entry.message == 'Locked screen'));
   assert(
       state.logs.any((entry) => entry.category == DashboardLogCategory.action));
+
+  await coordinator.dispose();
+}
+
+Future<void>
+    testCoordinatorSuppressesAutoUnlockAfterProximityLockUntilDeviceLeaves() async {
+  final platform = MockBleunlockPlatform(platformLabel: 'macOS');
+  final coordinator = AppCoordinator(
+    platform: platform,
+    config: const ProximityConfig(
+      enableMacAutoUnlock: true,
+      wakeOnProximity: true,
+      lockDelay: Duration(seconds: 1),
+      rssiWindowSize: 1,
+    ),
+    selectedDeviceIds: {'band-1'},
+    actionThrottleWindow: Duration.zero,
+  );
+
+  await coordinator.start();
+  platform.emitScan(
+    BleScanEvent(
+      deviceId: 'band-1',
+      rssi: -45,
+      seenAt: DateTime(2026, 5, 28, 10),
+    ),
+  );
+  await pumpEventQueue();
+  platform.emitScan(
+    BleScanEvent(
+      deviceId: 'band-1',
+      rssi: -86,
+      seenAt: DateTime(2026, 5, 28, 10, 0, 1),
+    ),
+  );
+  await pumpEventQueue();
+  coordinator.tick(DateTime(2026, 5, 28, 10, 0, 2));
+  await pumpEventQueue();
+
+  assert(platform.mockSession.lockCount == 1);
+  assert(platform.mockSession.locked == true);
+
+  platform.emitScan(
+    BleScanEvent(
+      deviceId: 'band-1',
+      rssi: -45,
+      seenAt: DateTime(2026, 5, 28, 10, 0, 3),
+    ),
+  );
+  await pumpEventQueue();
+
+  assert(platform.mockUnlock.unlockCount == 0);
+  assert(platform.mockSession.wakeCount == 0);
+  assert(platform.mockSession.locked == true);
+  assert(
+    coordinator.value.logs.any(
+      (entry) =>
+          entry.message == 'Auto unlock suspended' &&
+          entry.reason == 'proximityLock',
+    ),
+  );
+
+  platform.emitScan(
+    BleScanEvent(
+      deviceId: 'band-1',
+      rssi: -90,
+      seenAt: DateTime(2026, 5, 28, 10, 0, 4),
+    ),
+  );
+  await pumpEventQueue();
+  coordinator.tick(DateTime(2026, 5, 28, 10, 0, 5));
+  await pumpEventQueue();
+  platform.emitScan(
+    BleScanEvent(
+      deviceId: 'band-1',
+      rssi: -45,
+      seenAt: DateTime(2026, 5, 28, 10, 0, 6),
+    ),
+  );
+  await pumpEventQueue();
+
+  assert(platform.mockSession.wakeCount == 1);
+  assert(platform.mockUnlock.unlockCount == 1);
 
   await coordinator.dispose();
 }
@@ -2504,6 +2589,85 @@ Future<void>
           entry.reason != 'manualLock',
     ),
   );
+
+  await coordinator.dispose();
+}
+
+Future<void>
+    testCoordinatorSuppressesAutoUnlockAfterSessionLockWhileDeviceClose() async {
+  final platform = MockBleunlockPlatform(platformLabel: 'macOS');
+  final coordinator = AppCoordinator(
+    platform: platform,
+    config: const ProximityConfig(
+      enableMacAutoUnlock: true,
+      wakeOnProximity: true,
+      rssiWindowSize: 1,
+      lockDelay: Duration(seconds: 1),
+    ),
+    selectedDeviceIds: {'band-1'},
+    actionThrottleWindow: Duration.zero,
+  );
+
+  await coordinator.start();
+  platform.emitScan(
+    BleScanEvent(
+      deviceId: 'band-1',
+      rssi: -45,
+      seenAt: DateTime(2026, 5, 28, 10),
+    ),
+  );
+  await pumpEventQueue();
+
+  platform.mockSession.emitEvent(
+    SessionEvent(
+      kind: SessionEventKind.locked,
+      timestamp: DateTime(2026, 5, 28, 10, 0, 1),
+      reason: 'idleLock',
+    ),
+  );
+  await pumpEventQueue();
+
+  platform.emitScan(
+    BleScanEvent(
+      deviceId: 'band-1',
+      rssi: -44,
+      seenAt: DateTime(2026, 5, 28, 10, 0, 2),
+    ),
+  );
+  await pumpEventQueue();
+
+  assert(platform.mockSession.wakeCount == 0);
+  assert(platform.mockUnlock.unlockCount == 0);
+  assert(platform.mockSession.locked == true);
+  assert(
+    coordinator.value.logs.any(
+      (entry) =>
+          entry.message == 'Auto unlock suspended' &&
+          entry.reason == 'sessionLockWhileDeviceClose',
+    ),
+  );
+
+  platform.emitScan(
+    BleScanEvent(
+      deviceId: 'band-1',
+      rssi: -90,
+      seenAt: DateTime(2026, 5, 28, 10, 0, 3),
+    ),
+  );
+  await pumpEventQueue();
+  coordinator.tick(DateTime(2026, 5, 28, 10, 0, 4));
+  await pumpEventQueue();
+  platform.emitScan(
+    BleScanEvent(
+      deviceId: 'band-1',
+      rssi: -45,
+      seenAt: DateTime(2026, 5, 28, 10, 0, 5),
+    ),
+  );
+  await pumpEventQueue();
+
+  assert(platform.mockSession.wakeCount == 1);
+  assert(platform.mockUnlock.unlockCount == 1);
 
   await coordinator.dispose();
 }

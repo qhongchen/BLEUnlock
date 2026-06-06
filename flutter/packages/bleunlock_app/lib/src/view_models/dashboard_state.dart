@@ -147,7 +147,7 @@ class DashboardDeviceView {
       idLabel:
           broadcastAddressLabel ?? 'ID ${_shortPlatformId(device.platformId)}',
       name: displayName ?? addressHint ?? _shortPlatformId(device.platformId),
-      rssiLabel: device.lastRssi == null ? '-- dBm' : '${device.lastRssi} dBm',
+      rssiLabel: _rssiLabel(device),
       lastSeenLabel: 'Last seen ${_timeLabel(device.lastSeenAt)}',
       presenceLabel: _presenceLabel(presence?.state),
       isSelected: device.isSelected,
@@ -1949,6 +1949,18 @@ int _compareRssi(int? left, int? right) {
     return -1;
   }
   return right.compareTo(left);
+}
+
+String _rssiLabel(BleDevice device) {
+  final rssi = device.lastRssi;
+  if (rssi != null) {
+    return '$rssi dBm';
+  }
+  final source = device.rawAdvertisement?['source'];
+  if (source is String && source == 'deviceInformation') {
+    return 'System discovery';
+  }
+  return '-- dBm';
 }
 
 String _deviceSortName(BleDevice device) {
