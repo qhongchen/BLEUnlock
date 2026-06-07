@@ -68,6 +68,7 @@ constexpr UINT kTrayCommandQuit = 1005;
 
 using EventSink = flutter::EventSink<flutter::EncodableValue>;
 using BluetoothAddressType = winrt::Windows::Devices::Bluetooth::BluetoothAddressType;
+using BluetoothDevice = winrt::Windows::Devices::Bluetooth::BluetoothDevice;
 using BluetoothLEDevice = winrt::Windows::Devices::Bluetooth::BluetoothLEDevice;
 using BluetoothLEAdvertisement = winrt::Windows::Devices::Bluetooth::
     Advertisement::BluetoothLEAdvertisement;
@@ -354,6 +355,23 @@ std::string DeviceKey(const std::string &address,
     return address + "-" + NormalizeBluetoothAddressTypeText(address_type);
 }
 
+std::string DeviceInformationKey(const std::string &device_information_id) {
+    return "device-information:" + TrimAsciiWhitespace(device_information_id);
+}
+
+winrt::hstring BluetoothAssociationEndpointSelector() {
+    const auto le_selector =
+        BluetoothLEDevice::GetDeviceSelectorFromPairingState(false);
+    const auto classic_selector =
+        BluetoothDevice::GetDeviceSelectorFromPairingState(false);
+    std::wstring selector = L"(";
+    selector += le_selector.c_str();
+    selector += L") OR (";
+    selector += classic_selector.c_str();
+    selector += L")";
+    return winrt::hstring(selector);
+}
+
 void AppendUniqueEncodableValues(flutter::EncodableList *target,
                                  const flutter::EncodableList &source) {
     for (const auto &item : source) {
@@ -498,6 +516,26 @@ std::string BestDisplayName(const WindowsBleSeenDevice &device) {
     return "";
 }
 
+std::string BestDeviceId(const WindowsBleSeenDevice &device) {
+    if (HasText(device.address)) {
+        return device.address;
+    }
+    if (HasText(device.device_information_id)) {
+        return DeviceInformationKey(device.device_information_id);
+    }
+    return "";
+}
+
+std::string DeviceIdentityKey(const WindowsBleSeenDevice &device) {
+    if (HasText(device.address)) {
+        return DeviceKey(device.address, device.address_type);
+    }
+    if (HasText(device.device_information_id)) {
+        return DeviceInformationKey(device.device_information_id);
+    }
+    return "";
+}
+
 flutter::EncodableList ManufacturerDataBytes(
     const BluetoothLEAdvertisement &advertisement) {
     flutter::EncodableList result;
@@ -599,7 +637,7 @@ flutter::EncodableMap RawAdvertisementMap(const WindowsBleSeenDevice &device,
     result[flutter::EncodableValue("serviceUuids")] =
         flutter::EncodableValue(device.service_uuids);
     result[flutter::EncodableValue("identityKey")] =
-        flutter::EncodableValue(DeviceKey(device.address, device.address_type));
+        flutter::EncodableValue(DeviceIdentityKey(device));
     result[flutter::EncodableValue("packetCount")] =
         flutter::EncodableValue(device.packet_count);
     result[flutter::EncodableValue("scanResponseSeen")] =
@@ -639,7 +677,7 @@ flutter::EncodableMap ScanEventFromSeenDevice(
                             : std::string("deviceInformation");
     const auto event_rssi = advertisement_event ? device.last_rssi : -127;
     event[flutter::EncodableValue("deviceId")] =
-        flutter::EncodableValue(device.address);
+        flutter::EncodableValue(BestDeviceId(device));
     const auto display_name = BestDisplayName(device);
     if (HasText(display_name)) {
         event[flutter::EncodableValue("displayName")] =
@@ -1350,7 +1388,7 @@ void BleunlockWindowsPlugin::StartDeviceWatcher() {
         return;
     }
 
-    const auto selector = BluetoothLEDevice::GetDeviceSelectorFromPairingState(false);
+    const auto selector = BluetoothAssociationEndpointSelector();
     auto requested_properties = winrt::single_threaded_vector<winrt::hstring>({
         L"System.Devices.Aep.DeviceAddress",
         L"System.Devices.Aep.IsPaired",
@@ -1369,9 +1407,6 @@ void BleunlockWindowsPlugin::StartDeviceWatcher() {
             LookupStringProperty(properties, L"System.Devices.Aep.DeviceAddress",
                                  &raw_address);
             const auto address = NormalizeBluetoothAddressText(raw_address);
-            if (address.empty()) {
-                return;
-            }
 
             std::string raw_address_type;
             LookupStringProperty(
@@ -1408,9 +1443,6 @@ void BleunlockWindowsPlugin::StartDeviceWatcher() {
             LookupStringProperty(properties, L"System.Devices.Aep.DeviceAddress",
                                  &raw_address);
             const auto address = NormalizeBluetoothAddressText(raw_address);
-            if (address.empty()) {
-                return;
-            }
 
             std::string raw_address_type;
             LookupStringProperty(
@@ -1534,26 +1566,53 @@ void BleunlockWindowsPlugin::MergeDeviceInformationSnapshot(
     bool is_present,
     bool has_is_connectable,
     bool is_connectable) {
-    if (ble_watcher_ == nullptr || address.empty()) {
+    if (ble_watcher_ == nullptr ||
+        (address.empty() && !HasText(device_information_id))) {
         return;
     }
 
     {
         std::lock_guard<std::mutex> lock(ble_watcher_->devices_mutex);
-        auto key = DeviceKey(address, address_type);
-        if (NormalizeBluetoothAddressTypeText(address_type) == "unspecified") {
+        auto key = HasText(address)
+                       ? DeviceKey(address, address_type)
+                       : DeviceInformationKey(device_information_id);
+        bool matched_existing_device = false;
+        if (HasText(device_information_id)) {
+            const auto normalized_device_information_id =
+                TrimAsciiWhitespace(device_information_id);
             for (const auto &entry : ble_watcher_->devices) {
-                if (entry.second.address == address) {
+                if (entry.second.device_information_id ==
+                    normalized_device_information_id) {
                     key = entry.first;
+                    matched_existing_device = true;
                     break;
                 }
             }
         }
+        if (HasText(address) &&
+            NormalizeBluetoothAddressTypeText(address_type) == "unspecified") {
+            for (const auto &entry : ble_watcher_->devices) {
+                if (entry.second.address == address) {
+                    key = entry.first;
+                    matched_existing_device = true;
+                    break;
+                }
+            }
+        }
+        if (!HasText(address) && !matched_existing_device &&
+            !IsUsefulDisplayName(device_information_name)) {
+            return;
+        }
 
         auto &device = ble_watcher_->devices[key];
-        device.address = address;
-        device.address_hint =
-            HasText(address_hint) ? address_hint : FormatBluetoothAddressHintFromCompact(address);
+        if (HasText(address)) {
+            device.address = address;
+        }
+        if (HasText(address_hint)) {
+            device.address_hint = address_hint;
+        } else if (HasText(address) && !HasText(device.address_hint)) {
+            device.address_hint = FormatBluetoothAddressHintFromCompact(address);
+        }
         if (device.address_type == "unspecified") {
             device.address_type = NormalizeBluetoothAddressTypeText(address_type);
         }

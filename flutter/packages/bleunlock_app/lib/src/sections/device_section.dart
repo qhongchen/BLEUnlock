@@ -177,7 +177,8 @@ class _DeviceTile extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                Text(device.rssiLabel, style: textTheme.titleSmall),
+                Text(zhDisplayText(device.rssiLabel),
+                    style: textTheme.titleSmall),
                 const SizedBox(height: 4),
                 Tooltip(
                   message: zhDisplayText(device.presenceLabel),

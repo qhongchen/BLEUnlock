@@ -1923,6 +1923,10 @@ DashboardSnapshot snapshotFromDecision({
 List<DashboardDeviceView> devicesFromDecision(PresenceDecision decision) {
   final devices = decision.devices.values.toList()
     ..sort((left, right) {
+      final namedCompare = _compareNamedDevices(left, right);
+      if (namedCompare != 0) {
+        return namedCompare;
+      }
       final rssiCompare = _compareRssi(left.lastRssi, right.lastRssi);
       if (rssiCompare != 0) {
         return rssiCompare;
@@ -1936,6 +1940,19 @@ List<DashboardDeviceView> devicesFromDecision(PresenceDecision decision) {
         presence: decision.deviceStates[device.platformId],
       ),
   ];
+}
+
+int _compareNamedDevices(BleDevice left, BleDevice right) {
+  final leftHasName = _hasReadableDisplayName(left);
+  final rightHasName = _hasReadableDisplayName(right);
+  if (leftHasName == rightHasName) {
+    return 0;
+  }
+  return leftHasName ? -1 : 1;
+}
+
+bool _hasReadableDisplayName(BleDevice device) {
+  return _normalizedText(device.displayName) != null;
 }
 
 int _compareRssi(int? left, int? right) {
@@ -2069,6 +2086,10 @@ String? _windowsBroadcastAddressLabel(Map<String, Object?>? rawAdvertisement) {
   final compactAddress =
       _normalizedBluetoothAddress(rawAdvertisement?['bluetoothAddress']);
   if (compactAddress == null) {
+    final source = rawAdvertisement?['source'];
+    if (source is String && source == 'deviceInformation') {
+      return '系统发现';
+    }
     return null;
   }
   return '广播地址 ${_colonSeparatedBluetoothAddress(compactAddress)}';

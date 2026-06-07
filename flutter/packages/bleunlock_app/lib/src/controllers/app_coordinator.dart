@@ -210,6 +210,9 @@ class AppCoordinator {
       return;
     }
     _isScanning = true;
+    if (_isWindowsPlatform && !_isMonitoring) {
+      unawaited(_startWindowsEnhancedDiscovery());
+    }
     _publish();
   }
 
