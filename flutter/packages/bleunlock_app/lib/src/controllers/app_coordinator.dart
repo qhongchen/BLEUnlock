@@ -14,6 +14,9 @@ class AppCoordinator {
   static const int _scanLogRssiChangeThreshold = 5;
   static const Duration _windowsBleIdentityAliasWindow = Duration(minutes: 5);
   static const int _windowsBleIdentityRssiTolerance = 18;
+  static const Duration _windowsAppleIdentityCandidateWindow =
+      Duration(seconds: 20);
+  static const int _windowsAppleCandidateScoreGap = 6;
   static const Duration _windowsEnhancedDiscoveryWindow = Duration(seconds: 8);
 
   AppCoordinator({
@@ -825,27 +828,28 @@ class AppCoordinator {
       _windowsDeviceAliases.remove(event.deviceId);
     }
 
-    final alias = _findWindowsBleIdentityAlias(event);
+    final alias = _findWindowsBleIdentityAlias(event) ??
+        _findWindowsAppleManufacturerCandidateAlias(event);
     if (alias == null) {
       return event;
     }
 
     _windowsDeviceAliases[event.deviceId] =
-        _WindowsBleDeviceAlias(deviceId: alias, seenAt: event.seenAt);
+        _WindowsBleDeviceAlias(deviceId: alias.deviceId, seenAt: event.seenAt);
     _appendLog(
       timestamp: event.seenAt,
       category: DashboardLogCategory.action,
       message: 'Windows BLE identity alias',
       displayName: _normalizedText(event.displayName),
       addressHint: _normalizedText(event.addressHint),
-      deviceId: alias,
+      deviceId: alias.deviceId,
       rssi: _hasWindowsAdvertisement(event) ? event.rssi : null,
-      reason: 'windowsBleIdentityAlias',
+      reason: alias.reason,
       manufacturerData: event.manufacturerData,
       rawAdvertisement: event.rawAdvertisement,
       sessionState: _sessionState,
     );
-    return _copyScanEventWithDeviceId(event, alias);
+    return _copyScanEventWithDeviceId(event, alias.deviceId);
   }
 
   void _pruneWindowsBleIdentityAliases(DateTime timestamp) {
@@ -857,7 +861,9 @@ class AppCoordinator {
     });
   }
 
-  String? _findWindowsBleIdentityAlias(BleScanEvent event) {
+  _WindowsBleIdentityAliasResolution? _findWindowsBleIdentityAlias(
+    BleScanEvent event,
+  ) {
     String? bestDeviceId;
     var bestScore = 0;
     var isAmbiguous = false;
@@ -888,7 +894,168 @@ class AppCoordinator {
       }
     }
 
-    return isAmbiguous ? null : bestDeviceId;
+    if (isAmbiguous || bestDeviceId == null) {
+      return null;
+    }
+    return _WindowsBleIdentityAliasResolution(
+      deviceId: bestDeviceId,
+      reason: 'windowsBleIdentityAlias',
+    );
+  }
+
+  _WindowsBleIdentityAliasResolution?
+      _findWindowsAppleManufacturerCandidateAlias(BleScanEvent event) {
+    if (!_hasWindowsAdvertisement(event) ||
+        !_isWindowsAppleManufacturerCandidate(event)) {
+      return null;
+    }
+
+    final selectedIphoneDeviceIds =
+        _selectedWindowsIphoneSystemDiscoveryDeviceIds();
+    if (selectedIphoneDeviceIds.length != 1) {
+      return null;
+    }
+
+    final selectedDeviceId = selectedIphoneDeviceIds.single;
+    final candidatesById = <String, BleScanEvent>{
+      for (final entry in _visibleDevices.entries) entry.key: entry.value,
+      event.deviceId: event,
+    };
+    final candidates = candidatesById.values.where((candidate) {
+      if (_selectedDeviceIds.contains(candidate.deviceId)) {
+        return false;
+      }
+      final age = event.seenAt.difference(candidate.seenAt);
+      return !age.isNegative &&
+          age <= _windowsAppleIdentityCandidateWindow &&
+          _hasWindowsAdvertisement(candidate) &&
+          _isWindowsAppleManufacturerCandidate(candidate) &&
+          candidate.rssi >= config.minimumVisibleRssi;
+    }).toList()
+      ..sort(_compareWindowsAppleManufacturerCandidates);
+
+    final strictCandidates =
+        candidates.where(_hasWindowsAppleNearbyManufacturerPayload).toList();
+    final scopedCandidates =
+        strictCandidates.isNotEmpty ? strictCandidates : candidates;
+    if (scopedCandidates.isEmpty ||
+        scopedCandidates.first.deviceId != event.deviceId) {
+      return null;
+    }
+    if (strictCandidates.isEmpty && scopedCandidates.length != 1) {
+      return null;
+    }
+    if (_hasAmbiguousWindowsAppleCandidate(scopedCandidates)) {
+      return null;
+    }
+
+    return _WindowsBleIdentityAliasResolution(
+      deviceId: selectedDeviceId,
+      reason: strictCandidates.isNotEmpty
+          ? 'uniqueWindowsAppleNearbyManufacturerCandidate'
+          : 'uniqueWindowsAppleManufacturerCandidate',
+    );
+  }
+
+  Set<String> _selectedWindowsIphoneSystemDiscoveryDeviceIds() {
+    final result = <String>{};
+    for (final deviceId in _selectedDeviceIds) {
+      if (_isWindowsIphoneSystemDiscoverySelection(deviceId)) {
+        result.add(deviceId);
+      }
+    }
+    return result;
+  }
+
+  bool _isWindowsIphoneSystemDiscoverySelection(String deviceId) {
+    final event =
+        _visibleDevices[deviceId] ?? _publishedVisibleDevices[deviceId];
+    final profile = _windowsIdentityProfiles[deviceId];
+    final displayName = _normalizedText(event?.displayName) ??
+        _normalizedText(
+          event?.rawAdvertisement?['deviceInformationName']?.toString(),
+        ) ??
+        _normalizedText(profile?.displayName);
+    if (!_isIphoneDisplayName(displayName)) {
+      return false;
+    }
+    if (event == null) {
+      return true;
+    }
+    if (!_hasWindowsAdvertisement(event) ||
+        _rawString(event.rawAdvertisement?['source']) == 'deviceInformation') {
+      return true;
+    }
+    return _hasWindowsSystemDiscoveryEvidence(event, profile);
+  }
+
+  int _compareWindowsAppleManufacturerCandidates(
+    BleScanEvent left,
+    BleScanEvent right,
+  ) {
+    final scoreCompare = _windowsAppleCandidateScore(right)
+        .compareTo(_windowsAppleCandidateScore(left));
+    if (scoreCompare != 0) {
+      return scoreCompare;
+    }
+    final rssiCompare = right.rssi.compareTo(left.rssi);
+    if (rssiCompare != 0) {
+      return rssiCompare;
+    }
+    return right.seenAt.compareTo(left.seenAt);
+  }
+
+  bool _hasAmbiguousWindowsAppleCandidate(List<BleScanEvent> candidates) {
+    if (candidates.length <= 1) {
+      return false;
+    }
+    final topScore = _windowsAppleCandidateScore(candidates[0]);
+    final secondScore = _windowsAppleCandidateScore(candidates[1]);
+    return topScore - secondScore < _windowsAppleCandidateScoreGap;
+  }
+
+  int _windowsAppleCandidateScore(BleScanEvent event) {
+    var score = 0;
+    if (_hasWindowsAppleNearbyManufacturerPayload(event)) {
+      score += 10;
+    }
+    if (_rawBool(event.rawAdvertisement?['isConnectable'])) {
+      score += 2;
+    }
+    if (_rawBool(event.rawAdvertisement?['isScannable'])) {
+      score += 2;
+    }
+    final packetCount = _rawInt(event.rawAdvertisement?['packetCount']);
+    if (packetCount >= 50) {
+      score += 3;
+    } else if (packetCount >= 10) {
+      score += 2;
+    } else if (packetCount >= 3) {
+      score += 1;
+    }
+    if (event.rssi >= config.unlockRssi) {
+      score += 4;
+    } else if (event.rssi >= config.lockRssi) {
+      score += 2;
+    } else if (event.rssi >= config.minimumVisibleRssi) {
+      score += 1;
+    }
+    return score;
+  }
+
+  bool _hasWindowsSystemDiscoveryEvidence(
+    BleScanEvent event,
+    WindowsBleIdentityProfile? profile,
+  ) {
+    return _normalizedText(
+              event.rawAdvertisement?['deviceInformationId']?.toString(),
+            ) !=
+            null ||
+        _normalizedText(
+              event.rawAdvertisement?['deviceInformationName']?.toString(),
+            ) !=
+            null ||
+        profile?.deviceInformationIds.isNotEmpty == true;
   }
 
   int _windowsBleIdentityMatchScore(
@@ -2564,6 +2731,16 @@ class _WindowsBleDeviceAlias {
   }
 }
 
+class _WindowsBleIdentityAliasResolution {
+  const _WindowsBleIdentityAliasResolution({
+    required this.deviceId,
+    required this.reason,
+  });
+
+  final String deviceId;
+  final String reason;
+}
+
 String _sessionEventLabel(SessionEventKind kind) {
   switch (kind) {
     case SessionEventKind.locked:
@@ -2750,6 +2927,87 @@ String? _manufacturerDataHex(List<int>? data) {
     buffer.write(byte.toRadixString(16).padLeft(2, '0'));
   }
   return buffer.toString();
+}
+
+String? _normalizedHex(String? value) {
+  final normalized =
+      value?.replaceAll(RegExp(r'[^0-9a-fA-F]'), '').toLowerCase();
+  if (normalized == null || normalized.isEmpty) {
+    return null;
+  }
+  return normalized;
+}
+
+bool _isIphoneDisplayName(String? value) {
+  final normalized = _normalizedText(value)?.toLowerCase();
+  return normalized != null && normalized.contains('iphone');
+}
+
+bool _isWindowsAppleManufacturerCandidate(BleScanEvent event) {
+  if (_manufacturerCompanyIdSet(event).contains('76')) {
+    return true;
+  }
+
+  final dataSections = event.rawAdvertisement?['dataSections'];
+  if (dataSections is! List) {
+    return false;
+  }
+  for (final section in dataSections) {
+    if (section is! Map || !_isManufacturerSpecificDataSection(section)) {
+      continue;
+    }
+    if (_normalizedHex(_rawString(section['dataHex']))?.startsWith('4c00') ==
+        true) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool _hasWindowsAppleNearbyManufacturerPayload(BleScanEvent event) {
+  final sections = event.rawAdvertisement?['manufacturerDataSections'];
+  if (sections is List) {
+    for (final section in sections) {
+      if (section is! Map || _manufacturerCompanyId(section) != '76') {
+        continue;
+      }
+      if (_isAppleNearbyManufacturerHex(_rawString(section['dataHex'])) ||
+          _isAppleNearbyManufacturerHex(_rawString(section['payloadHex']))) {
+        return true;
+      }
+    }
+  }
+
+  final dataSections = event.rawAdvertisement?['dataSections'];
+  if (dataSections is List) {
+    for (final section in dataSections) {
+      if (section is! Map || !_isManufacturerSpecificDataSection(section)) {
+        continue;
+      }
+      if (_isAppleNearbyManufacturerHex(_rawString(section['dataHex']))) {
+        return true;
+      }
+    }
+  }
+
+  return _isAppleNearbyManufacturerHex(
+    _manufacturerDataHex(event.manufacturerData),
+  );
+}
+
+bool _isAppleNearbyManufacturerHex(String? value) {
+  final normalized = _normalizedHex(value);
+  if (normalized == null) {
+    return false;
+  }
+  return normalized.startsWith('1007') || normalized.startsWith('4c001007');
+}
+
+bool _isManufacturerSpecificDataSection(Map section) {
+  if (_rawInt(section['dataType']) == 255) {
+    return true;
+  }
+  return _normalizedHex(_rawString(section['dataTypeHex'])) == 'ff';
 }
 
 String _hexPrefix(String value, int maxLength) {
