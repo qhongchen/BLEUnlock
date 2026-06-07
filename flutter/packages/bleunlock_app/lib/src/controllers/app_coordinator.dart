@@ -95,7 +95,8 @@ class AppCoordinator {
   bool _isPollingSessionState = false;
   bool _isDisposed = false;
   String? _lastLoggedDecisionSignature;
-  String? _autoUnlockSuppressionReason;
+  _AutoUnlockGate _autoUnlockGate = _AutoUnlockGate.blocked;
+  String _autoUnlockBlockedReason = 'externalLock';
   bool _hasLoggedAutoUnlockSuppression = false;
   bool _hasWokenForCurrentCloseCycle = false;
   bool _isWindowsEnhancedDiscoverySwitching = false;
@@ -672,7 +673,7 @@ class AppCoordinator {
     try {
       await platform.session.lock();
       _sessionState = DashboardSessionState.locked;
-      _suspendAutoUnlockUntilDeviceLeaves('manualLock');
+      _blockAutoUnlock('manualLock');
       _lastActionLabel = 'Locked screen';
       _appendLog(
         timestamp: DateTime.now(),
@@ -1500,7 +1501,7 @@ class AppCoordinator {
       case SessionEventKind.locked:
         _sessionState = DashboardSessionState.locked;
         _hasLoggedAlreadyLockedSkip = false;
-        _suspendAutoUnlockAfterSessionLockIfDeviceClose();
+        _blockExternalAutoUnlock();
       case SessionEventKind.displaySleep:
         _sessionState = DashboardSessionState.displaySleep;
         _hasLoggedAlreadyLockedSkip = false;
@@ -1511,7 +1512,7 @@ class AppCoordinator {
         _sessionState = DashboardSessionState.unlocked;
         _hasLoggedAlreadyLockedSkip = false;
         _hasWokenForCurrentCloseCycle = false;
-        _clearAutoUnlockSuppression();
+        _blockAutoUnlock('externalLock');
         _cancelWakeUnlockTimer();
         _cancelUnlockRetry(reason: 'sessionNotLockedForRetry');
       case SessionEventKind.displayWake:
@@ -1563,7 +1564,6 @@ class AppCoordinator {
     if (!_hasCloseTrackedDevice(decision)) {
       _hasWokenForCurrentCloseCycle = false;
     }
-    _clearAutoUnlockSuppressionIfDeviceLeft(decision);
     if (_shouldLogDecision(decision)) {
       _appendLog(
         timestamp: decision.timestamp,
@@ -1640,11 +1640,12 @@ class AppCoordinator {
     if (!isLocked) {
       _cancelWakeUnlockTimer();
       _cancelUnlockRetry(reason: 'sessionNotLockedForRetry');
+      _blockAutoUnlock('externalLock');
       return;
     }
 
-    if (_isAutoUnlockSuppressed) {
-      _appendAutoUnlockSuppressedLog(decision.timestamp);
+    if (!_canAutoUnlock) {
+      _appendAutoUnlockBlockedLog(decision.timestamp);
       _publish();
       return;
     }
@@ -1752,7 +1753,7 @@ class AppCoordinator {
       await platform.session.lock();
       _sessionState = DashboardSessionState.locked;
       _hasLoggedAlreadyLockedSkip = false;
-      _suspendAutoUnlockUntilDeviceLeaves('proximityLock');
+      _armAutoUnlockFromProximityLock();
       _lastActionLabel = 'Locked screen';
       _appendLog(
         timestamp: timestamp,
@@ -1784,6 +1785,7 @@ class AppCoordinator {
       if (!isLocked) {
         _hasLoggedAlreadyLockedSkip = false;
         _hasWokenForCurrentCloseCycle = false;
+        _blockAutoUnlock('externalLock');
       }
       return isLocked;
     } catch (error) {
@@ -1821,6 +1823,9 @@ class AppCoordinator {
       if (!isLocked) {
         _cancelUnlockRetry(reason: 'sessionNotLockedForRetry');
         _hasWokenForCurrentCloseCycle = false;
+        _blockAutoUnlock('externalLock');
+      } else {
+        _blockExternalAutoUnlock();
       }
       _lastActionLabel = isLocked ? 'Session locked' : 'Session unlocked';
       _appendLog(
@@ -1890,8 +1895,8 @@ class AppCoordinator {
   }
 
   Future<void> _unlockFromDecision(DateTime timestamp) async {
-    if (_isAutoUnlockSuppressed) {
-      _appendAutoUnlockSuppressedLog(timestamp);
+    if (!_canAutoUnlock) {
+      _appendAutoUnlockBlockedLog(timestamp);
       _publish();
       return;
     }
@@ -1927,6 +1932,7 @@ class AppCoordinator {
     if (!isLocked) {
       _sessionState = DashboardSessionState.unlocked;
       _hasWokenForCurrentCloseCycle = false;
+      _blockAutoUnlock('externalLock');
       _lastActionLabel = 'Unlock skipped';
       _appendLog(
         timestamp: timestamp,
@@ -1984,7 +1990,7 @@ class AppCoordinator {
       if (result.success) {
         _sessionState = DashboardSessionState.unlocked;
         _hasWokenForCurrentCloseCycle = false;
-        _clearAutoUnlockSuppression();
+        _blockAutoUnlock('externalLock');
       }
       _lastActionLabel = result.success ? 'Unlocked session' : 'Unlock failed';
       _appendLog(
@@ -2020,7 +2026,7 @@ class AppCoordinator {
     }
 
     if (!result.success && result.reason != 'stillLocked') {
-      _suspendAutoUnlockUntilDeviceLeaves('unlockFailed');
+      _blockAutoUnlock('unlockFailed');
       _publish();
       return;
     }
@@ -2039,14 +2045,14 @@ class AppCoordinator {
       return;
     }
     if (!stillLocked) {
-      _clearAutoUnlockSuppression();
+      _blockAutoUnlock('externalLock');
       _sessionState = DashboardSessionState.unlocked;
       _hasWokenForCurrentCloseCycle = false;
       return;
     }
 
     if (attempt >= _unlockRetryLimit) {
-      _suspendAutoUnlockUntilDeviceLeaves('unlockFailed');
+      _blockAutoUnlock('unlockFailed');
       _publish();
       return;
     }
@@ -2457,35 +2463,30 @@ class AppCoordinator {
 
   bool get _isSessionLocked => _sessionState.isLockedLike;
 
-  bool get _isAutoUnlockSuppressed => _autoUnlockSuppressionReason != null;
+  bool get _canAutoUnlock =>
+      _autoUnlockGate == _AutoUnlockGate.armedByProximityLock;
 
-  void _suspendAutoUnlockAfterSessionLockIfDeviceClose() {
-    final decision = _lastDecision;
-    if (decision == null ||
-        _isAutoUnlockSuppressed ||
-        !_hasCloseTrackedDevice(decision)) {
-      return;
-    }
-    _suspendAutoUnlockUntilDeviceLeaves('sessionLockWhileDeviceClose');
-  }
-
-  void _suspendAutoUnlockUntilDeviceLeaves(String reason) {
-    _autoUnlockSuppressionReason = reason;
-    _hasLoggedAutoUnlockSuppression = false;
-    _cancelWakeUnlockTimer();
-    _cancelUnlockRetry(reason: 'autoUnlockSuppressedForRetry');
-  }
-
-  void _clearAutoUnlockSuppression() {
-    _autoUnlockSuppressionReason = null;
+  void _armAutoUnlockFromProximityLock() {
+    _autoUnlockGate = _AutoUnlockGate.armedByProximityLock;
+    _autoUnlockBlockedReason = 'proximityLock';
     _hasLoggedAutoUnlockSuppression = false;
   }
 
-  void _clearAutoUnlockSuppressionIfDeviceLeft(PresenceDecision decision) {
-    if (!_isAutoUnlockSuppressed || _hasCloseTrackedDevice(decision)) {
+  void _blockExternalAutoUnlock() {
+    if (_canAutoUnlock) {
       return;
     }
-    _clearAutoUnlockSuppression();
+    _blockAutoUnlock('externalLock');
+  }
+
+  void _blockAutoUnlock(String reason) {
+    _autoUnlockGate = _AutoUnlockGate.blocked;
+    _autoUnlockBlockedReason = reason;
+    _hasLoggedAutoUnlockSuppression = false;
+    if (reason != 'externalLock') {
+      _cancelWakeUnlockTimer();
+      _cancelUnlockRetry(reason: 'autoUnlockSuppressedForRetry');
+    }
   }
 
   bool _hasCloseTrackedDevice(PresenceDecision decision) {
@@ -2494,7 +2495,7 @@ class AppCoordinator {
     );
   }
 
-  void _appendAutoUnlockSuppressedLog(DateTime timestamp) {
+  void _appendAutoUnlockBlockedLog(DateTime timestamp) {
     if (_hasLoggedAutoUnlockSuppression) {
       return;
     }
@@ -2504,10 +2505,15 @@ class AppCoordinator {
       timestamp: timestamp,
       category: DashboardLogCategory.action,
       message: _lastActionLabel,
-      reason: _autoUnlockSuppressionReason,
+      reason: _autoUnlockBlockedReason,
       sessionState: _sessionState,
     );
   }
+}
+
+enum _AutoUnlockGate {
+  blocked,
+  armedByProximityLock,
 }
 
 enum _ActionKind {

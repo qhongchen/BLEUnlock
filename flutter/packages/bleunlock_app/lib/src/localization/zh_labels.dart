@@ -221,7 +221,7 @@ const Map<String, String> _exactLabels = {
   'stillLocked': '仍处于锁定状态',
   'manualLock': '主动锁屏',
   'proximityLock': '自动锁屏',
-  'sessionLockWhileDeviceClose': '锁屏时设备仍在附近',
+  'externalLock': '外部锁屏',
   'unlockFailed': '解锁失败',
   'System discovery': '系统发现',
   'deviceInformation': '系统发现',
