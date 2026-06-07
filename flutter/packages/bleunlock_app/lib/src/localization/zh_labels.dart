@@ -209,6 +209,7 @@ const Map<String, String> _exactLabels = {
   'Monitoring': '监听中',
   'Scanning': '扫描中',
   'Idle': '空闲',
+  'Waiting for signal': '等待信号',
   'None': '无',
   'Pending plugin': '等待插件',
   'supported': '支持',

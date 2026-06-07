@@ -2179,6 +2179,7 @@ class AppCoordinator {
           autoUnlockSecretEditable: _isAutoUnlockSecretEditable,
           autoUnlockPermissionSettingsAvailable:
               _isAutoUnlockPermissionSettingsAvailable,
+          selectedDeviceCount: _selectedDeviceIds.length,
         ),
         devices: _devicesFromPublishedList(currentDecision),
         logs: List.unmodifiable(_logs),

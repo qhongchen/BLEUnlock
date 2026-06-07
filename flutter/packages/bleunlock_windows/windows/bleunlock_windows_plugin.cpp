@@ -1589,8 +1589,7 @@ void BleunlockWindowsPlugin::MergeDeviceInformationSnapshot(
                 }
             }
         }
-        if (HasText(address) &&
-            NormalizeBluetoothAddressTypeText(address_type) == "unspecified") {
+        if (HasText(address)) {
             for (const auto &entry : ble_watcher_->devices) {
                 if (entry.second.address == address) {
                     key = entry.first;

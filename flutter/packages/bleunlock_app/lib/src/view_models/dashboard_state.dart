@@ -1890,7 +1890,10 @@ DashboardSnapshot snapshotFromDecision({
   required bool autoUnlockSecretConfigured,
   required bool autoUnlockSecretEditable,
   required bool autoUnlockPermissionSettingsAvailable,
+  int? selectedDeviceCount,
 }) {
+  final effectiveSelectedDeviceCount = selectedDeviceCount ??
+      decision.devices.values.where((device) => device.isSelected).length;
   return DashboardSnapshot(
     platformLabel: platformLabel,
     monitoringStatus: isMonitoring
@@ -1901,10 +1904,11 @@ DashboardSnapshot snapshotFromDecision({
     stateLabel: _aggregateStateLabel(
       decision.deviceStates.values,
       isSessionLocked: isSessionLocked,
+      isMonitoring: isMonitoring,
+      selectedDeviceCount: effectiveSelectedDeviceCount,
     ),
     bestRssi: _bestRssi(decision.deviceStates.values),
-    selectedDeviceCount:
-        decision.devices.values.where((device) => device.isSelected).length,
+    selectedDeviceCount: effectiveSelectedDeviceCount,
     lastActionLabel: lastActionLabel,
     bluetoothCapabilityLabel: _capabilityLabel(bluetoothCapability),
     autoLockCapabilityLabel: _capabilityLabel(autoLockCapability),
@@ -1997,6 +2001,8 @@ String? _normalizedText(String? value) {
 String _aggregateStateLabel(
   Iterable<DevicePresence> presences, {
   required bool isSessionLocked,
+  required bool isMonitoring,
+  required int selectedDeviceCount,
 }) {
   if (isSessionLocked) {
     return 'Locked';
@@ -2015,6 +2021,9 @@ String _aggregateStateLabel(
     (presence) => presence.state == DevicePresenceState.lost,
   )) {
     return 'Lost';
+  }
+  if (isMonitoring && selectedDeviceCount > 0) {
+    return 'Waiting for signal';
   }
   return 'Idle';
 }
