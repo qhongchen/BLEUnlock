@@ -5,7 +5,7 @@ import 'package:bleunlock_app/src/widgets/primary_action_row.dart';
 import 'package:bleunlock_app/src/widgets/section_card.dart';
 import 'package:flutter/material.dart';
 
-class DeviceSection extends StatelessWidget {
+class DeviceSection extends StatefulWidget {
   const DeviceSection({
     required this.devices,
     required this.isMonitoring,
@@ -29,8 +29,35 @@ class DeviceSection extends StatelessWidget {
       onDeviceSelectionChanged;
 
   @override
+  State<DeviceSection> createState() => _DeviceSectionState();
+}
+
+class _DeviceSectionState extends State<DeviceSection> {
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  void _handleSearchChanged(String value) {
+    setState(() {
+      _searchQuery = _normalizeSearchText(value);
+    });
+  }
+
+  void _clearSearch() {
+    _searchController.clear();
+    _handleSearchChanged('');
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final devices = widget.devices;
     final hasSelectedDevice = devices.any((device) => device.isSelected);
+    final filteredDevices = _filteredDevices(devices, _searchQuery);
     return SectionCard(
       title: '设备',
       icon: Icons.bluetooth_searching,
@@ -43,25 +70,105 @@ class DeviceSection extends StatelessWidget {
               message: '先开始扫描，选择一个或多个 BLE 设备，然后开启监听。',
             )
           else
-            _DeviceList(
-              devices: devices,
-              onDeviceSelectionChanged: onDeviceSelectionChanged,
+            Column(
+              children: [
+                _DeviceSearchField(
+                  controller: _searchController,
+                  visibleCount: filteredDevices.length,
+                  totalCount: devices.length,
+                  onChanged: _handleSearchChanged,
+                  onClear: _clearSearch,
+                ),
+                const SizedBox(height: 12),
+                if (filteredDevices.isEmpty)
+                  const EmptyState(
+                    title: '没有匹配设备',
+                    message: '换一个关键词，或清空搜索后查看全部设备。',
+                  )
+                else
+                  _DeviceList(
+                    devices: filteredDevices,
+                    onDeviceSelectionChanged: widget.onDeviceSelectionChanged,
+                  ),
+              ],
             ),
           const SizedBox(height: 12),
           PrimaryActionRow(
-            isMonitoring: isMonitoring,
-            onStartScanning: onStartScanning,
-            onStartMonitoring: onStartMonitoring,
-            onPauseScanning: onPauseScanning,
-            onLockNow: onLockNow,
-            onRefreshDevices: onRefreshDevices,
+            isMonitoring: widget.isMonitoring,
+            onStartScanning: widget.onStartScanning,
+            onStartMonitoring: widget.onStartMonitoring,
+            onPauseScanning: widget.onPauseScanning,
+            onLockNow: widget.onLockNow,
+            onRefreshDevices: widget.onRefreshDevices,
             canStartMonitoring: hasSelectedDevice,
             monitoringHint:
-                !isMonitoring && devices.isNotEmpty && !hasSelectedDevice
+                !widget.isMonitoring && devices.isNotEmpty && !hasSelectedDevice
                     ? '请先选择一个或多个设备，再开始监听。'
                     : null,
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _DeviceSearchField extends StatelessWidget {
+  const _DeviceSearchField({
+    required this.controller,
+    required this.visibleCount,
+    required this.totalCount,
+    required this.onChanged,
+    required this.onClear,
+  });
+
+  final TextEditingController controller;
+  final int visibleCount;
+  final int totalCount;
+  final ValueChanged<String> onChanged;
+  final VoidCallback onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final textTheme = Theme.of(context).textTheme;
+    final hasQuery = controller.text.trim().isNotEmpty;
+    return TextField(
+      controller: controller,
+      onChanged: onChanged,
+      textInputAction: TextInputAction.search,
+      decoration: InputDecoration(
+        isDense: true,
+        filled: true,
+        fillColor: colorScheme.surfaceContainerHighest,
+        prefixIcon: const Icon(Icons.search),
+        suffixIcon: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              '$visibleCount/$totalCount',
+              style: textTheme.bodySmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+            if (hasQuery)
+              IconButton(
+                tooltip: '清空搜索',
+                icon: const Icon(Icons.close),
+                onPressed: onClear,
+              )
+            else
+              const SizedBox(width: 16),
+          ],
+        ),
+        hintText: '搜索设备、ID、广播地址',
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(8),
+          borderSide: BorderSide(color: colorScheme.outlineVariant),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(8),
+          borderSide: BorderSide(color: colorScheme.outlineVariant),
+        ),
       ),
     );
   }
@@ -212,6 +319,46 @@ String _deviceLineLabel(DashboardDeviceView device) {
     return device.name;
   }
   return '${device.name} · ${device.idLabel}';
+}
+
+List<DashboardDeviceView> _filteredDevices(
+  List<DashboardDeviceView> devices,
+  String query,
+) {
+  if (query.isEmpty) {
+    return devices;
+  }
+  return [
+    for (final device in devices)
+      if (_deviceMatchesSearch(device, query)) device,
+  ];
+}
+
+bool _deviceMatchesSearch(DashboardDeviceView device, String query) {
+  final haystack = _normalizeSearchText([
+    device.name,
+    device.id,
+    device.idLabel,
+    zhDisplayText(device.rssiLabel),
+    zhDisplayText(device.lastSeenLabel),
+    zhDisplayText(device.presenceLabel),
+  ].join(' '));
+  if (haystack.contains(query)) {
+    return true;
+  }
+  final compactQuery = _compactSearchText(query);
+  if (compactQuery.isEmpty || compactQuery == query) {
+    return false;
+  }
+  return _compactSearchText(haystack).contains(compactQuery);
+}
+
+String _normalizeSearchText(String value) {
+  return value.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
+}
+
+String _compactSearchText(String value) {
+  return value.replaceAll(RegExp(r'[\s:._-]+'), '');
 }
 
 bool _looksLikeUuid(String value) {
