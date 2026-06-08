@@ -433,7 +433,7 @@ class _LockSyncRowState extends State<_LockSyncRow> {
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
           title: const Text('同步手动锁屏'),
-          subtitle: const Text('点击立即锁屏时也通知 client，默认建议关闭'),
+          subtitle: const Text('App 内立即锁屏时通知 Client；系统锁屏始终同步'),
           value: _syncManualLocks,
           onChanged: (value) {
             setState(() {

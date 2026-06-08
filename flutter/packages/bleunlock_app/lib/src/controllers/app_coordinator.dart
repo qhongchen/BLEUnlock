@@ -151,6 +151,9 @@ class AppCoordinator {
       ..addAll(settings.windowsIdentityProfiles);
     _lockSyncSnapshot = LockSyncSnapshot(config: settings.lockSyncConfig);
     _ensureLockSyncSubscription();
+    if (settings.lockSyncConfig.role == LockSyncRole.server) {
+      _ensureSessionSubscription();
+    }
     unawaited(_lockSyncController.updateConfig(settings.lockSyncConfig));
     _rebuildEngine();
     _lastActionLabel = 'Settings loaded';
@@ -465,6 +468,9 @@ class AppCoordinator {
 
   Future<void> updateLockSyncConfig(LockSyncConfig config) async {
     _ensureLockSyncSubscription();
+    if (config.role == LockSyncRole.server) {
+      _ensureSessionSubscription();
+    }
     _lockSyncSnapshot = LockSyncSnapshot(config: config);
     _lastActionLabel = 'Lock sync settings updated';
     _appendLog(
@@ -2272,10 +2278,10 @@ class AppCoordinator {
     if (config.role != LockSyncRole.server) {
       return;
     }
-    final shouldSync = reason == 'proximityLock'
-        ? config.syncProximityLocks
-        : (reason == 'manualLock' || reason == 'externalLock') &&
-            config.syncManualLocks;
+    final shouldSync = reason == 'externalLock' ||
+        (reason == 'proximityLock'
+            ? config.syncProximityLocks
+            : reason == 'manualLock' && config.syncManualLocks);
     if (!shouldSync) {
       return;
     }

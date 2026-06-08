@@ -845,7 +845,7 @@ class _ServerModePanel extends StatelessWidget {
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             title: const Text('同步手动锁屏'),
-            subtitle: const Text('包含快捷键和系统菜单锁屏，默认建议关闭'),
+            subtitle: const Text('App 内立即锁屏时通知 Client；系统锁屏始终同步'),
             value: syncManualLocks,
             onChanged: enabled ? onSyncManualLocksChanged : null,
           ),
