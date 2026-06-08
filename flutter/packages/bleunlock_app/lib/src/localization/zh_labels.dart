@@ -267,6 +267,7 @@ const Map<String, String> _exactLabels = {
   'systemSleep': '系统休眠',
   'systemWake': '系统唤醒',
   'Settings loaded': '设置已加载',
+  'Settings save failed': '设置保存失败',
   'Bluetooth scanning unavailable': '蓝牙扫描不可用',
   'Auto lock unavailable': '自动锁屏不可用',
   'Select a device first': '请先选择设备',

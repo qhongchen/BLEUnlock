@@ -24,6 +24,8 @@ class AppCoordinator {
   static const int _windowsAppleCandidateRssiGap = 12;
   static const int _windowsAppleStrongCandidateRssi = -60;
   static const Duration _windowsEnhancedDiscoveryWindow = Duration(seconds: 8);
+  static const Duration _localLockSessionSyncSuppressionWindow =
+      Duration(seconds: 5);
 
   AppCoordinator({
     required this.platform,
@@ -113,6 +115,7 @@ class AppCoordinator {
   bool _hasLoggedAutoUnlockSuppression = false;
   bool _hasWokenForCurrentCloseCycle = false;
   bool _isWindowsEnhancedDiscoverySwitching = false;
+  DateTime? _suppressExternalLockSyncUntil;
   LockSyncSnapshot _lockSyncSnapshot = const LockSyncSnapshot.initial();
 
   DashboardState get value => _value;
@@ -757,6 +760,7 @@ class AppCoordinator {
     }
 
     try {
+      _suppressExternalLockSyncFromUpcomingSessionEvent();
       await platform.session.lock();
       _sessionState = DashboardSessionState.locked;
       _blockAutoUnlock('manualLock');
@@ -769,6 +773,7 @@ class AppCoordinator {
       );
       _broadcastLockSync(reason: 'manualLock', timestamp: DateTime.now());
     } catch (error) {
+      _clearExternalLockSyncSuppression();
       _appendPlatformFailureLog(
         timestamp: DateTime.now(),
         label: 'Lock failed',
@@ -1654,16 +1659,32 @@ class AppCoordinator {
   }
 
   void _saveSettings() {
-    unawaited(
-      _settingsRepository.save(
+    unawaited(_saveSettingsSafely());
+  }
+
+  Future<void> _saveSettingsSafely() async {
+    try {
+      await _settingsRepository.save(
         AppSettings(
           config: config,
           selectedDeviceIds: Set.unmodifiable(_selectedDeviceIds),
           lockSyncConfig: _lockSyncSnapshot.config,
           windowsIdentityProfiles: Map.unmodifiable(_windowsIdentityProfiles),
         ),
-      ),
-    );
+      );
+    } catch (error) {
+      if (_isDisposed) {
+        return;
+      }
+      _lastActionLabel = 'Settings save failed';
+      _appendLog(
+        timestamp: DateTime.now(),
+        category: DashboardLogCategory.error,
+        message: 'Settings save failed: $error',
+        reason: 'settingsSaveFailed',
+      );
+      _publish(_lastDecision);
+    }
   }
 
   Future<void> _refreshAutoUnlockSecretStatus() async {
@@ -1908,6 +1929,10 @@ class AppCoordinator {
         _sessionState = DashboardSessionState.locked;
         _hasLoggedAlreadyLockedSkip = false;
         _blockExternalAutoUnlock();
+        if (!_consumeExternalLockSyncSuppression()) {
+          _broadcastLockSync(
+              reason: 'externalLock', timestamp: event.timestamp);
+        }
       case SessionEventKind.displaySleep:
         _sessionState = DashboardSessionState.displaySleep;
         _hasLoggedAlreadyLockedSkip = false;
@@ -2151,6 +2176,7 @@ class AppCoordinator {
     }
 
     try {
+      _suppressExternalLockSyncFromUpcomingSessionEvent();
       await platform.session.lock();
       _sessionState = DashboardSessionState.locked;
       _hasLoggedAlreadyLockedSkip = false;
@@ -2227,6 +2253,7 @@ class AppCoordinator {
       );
       _broadcastLockSync(reason: 'proximityLock', timestamp: timestamp);
     } catch (error) {
+      _clearExternalLockSyncSuppression();
       _appendPlatformFailureLog(
         timestamp: timestamp,
         label: 'Lock failed',
@@ -2247,7 +2274,8 @@ class AppCoordinator {
     }
     final shouldSync = reason == 'proximityLock'
         ? config.syncProximityLocks
-        : reason == 'manualLock' && config.syncManualLocks;
+        : (reason == 'manualLock' || reason == 'externalLock') &&
+            config.syncManualLocks;
     if (!shouldSync) {
       return;
     }
@@ -2257,6 +2285,25 @@ class AppCoordinator {
         timestamp: timestamp,
       ),
     );
+  }
+
+  void _suppressExternalLockSyncFromUpcomingSessionEvent() {
+    _suppressExternalLockSyncUntil = DateTime.now().add(
+      _localLockSessionSyncSuppressionWindow,
+    );
+  }
+
+  bool _consumeExternalLockSyncSuppression() {
+    final suppressUntil = _suppressExternalLockSyncUntil;
+    if (suppressUntil == null) {
+      return false;
+    }
+    _suppressExternalLockSyncUntil = null;
+    return DateTime.now().isBefore(suppressUntil);
+  }
+
+  void _clearExternalLockSyncSuppression() {
+    _suppressExternalLockSyncUntil = null;
   }
 
   Future<bool> _isCurrentlyLocked(DateTime timestamp) async {

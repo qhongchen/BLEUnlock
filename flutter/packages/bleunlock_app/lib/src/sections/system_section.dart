@@ -18,6 +18,7 @@ class SystemSection extends StatelessWidget {
     this.onLockSyncConfigChanged,
     this.onLockSyncSharedSecretGenerated,
     this.onLockSyncRestarted,
+    this.showLockSyncSettings = false,
     super.key,
   });
 
@@ -32,6 +33,7 @@ class SystemSection extends StatelessWidget {
   final Future<void> Function(LockSyncConfig config)? onLockSyncConfigChanged;
   final Future<void> Function()? onLockSyncSharedSecretGenerated;
   final Future<void> Function()? onLockSyncRestarted;
+  final bool showLockSyncSettings;
 
   @override
   Widget build(BuildContext context) {
@@ -92,14 +94,16 @@ class SystemSection extends StatelessWidget {
             capabilityLabel: snapshot.startupCapabilityLabel,
             onChanged: onStartupChanged,
           ),
-          const Divider(height: 32),
-          _LockSyncRow(
-            snapshot: lockSync,
-            onConfigChanged: onLockSyncConfigChanged ?? _ignoreLockSyncConfig,
-            onSharedSecretGenerated:
-                onLockSyncSharedSecretGenerated ?? _noopFuture,
-            onRestarted: onLockSyncRestarted ?? _noopFuture,
-          ),
+          if (showLockSyncSettings) ...[
+            const Divider(height: 32),
+            _LockSyncRow(
+              snapshot: lockSync,
+              onConfigChanged: onLockSyncConfigChanged ?? _ignoreLockSyncConfig,
+              onSharedSecretGenerated:
+                  onLockSyncSharedSecretGenerated ?? _noopFuture,
+              onRestarted: onLockSyncRestarted ?? _noopFuture,
+            ),
+          ],
         ],
       ),
     );
