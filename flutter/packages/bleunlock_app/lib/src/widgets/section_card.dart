@@ -5,26 +5,23 @@ class SectionCard extends StatelessWidget {
     required this.title,
     required this.icon,
     required this.child,
+    this.showHeader = true,
     super.key,
   });
 
   final String title;
   final IconData icon;
   final Widget child;
+  final bool showHeader;
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      elevation: 0,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(8),
-        side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
+    return Padding(
+      padding: showHeader ? const EdgeInsets.all(20) : EdgeInsets.zero,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (showHeader) ...[
             Row(
               children: [
                 Icon(icon),
@@ -33,9 +30,9 @@ class SectionCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 16),
-            child,
           ],
-        ),
+          child,
+        ],
       ),
     );
   }

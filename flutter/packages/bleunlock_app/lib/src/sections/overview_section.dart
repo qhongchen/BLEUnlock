@@ -29,6 +29,7 @@ class OverviewSection extends StatelessWidget {
     return SectionCard(
       title: '总览',
       icon: Icons.dashboard_outlined,
+      showHeader: false,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:bleunlock_app/src/localization/zh_labels.dart';
@@ -14,14 +13,12 @@ class LogSection extends StatefulWidget {
     required this.logs,
     this.state,
     this.exportDirectory,
-    this.validationSessionId,
     super.key,
   });
 
   final List<DashboardLogEntry> logs;
   final DashboardState? state;
   final Directory? exportDirectory;
-  final String? validationSessionId;
 
   @override
   State<LogSection> createState() => _LogSectionState();
@@ -54,6 +51,7 @@ class _LogSectionState extends State<LogSection> {
     return SectionCard(
       title: '日志',
       icon: Icons.article_outlined,
+      showHeader: false,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -205,24 +203,10 @@ class _LogSectionState extends State<LogSection> {
     );
   }
 
-  String get _diagnosticExportPrefix {
-    final validationSessionId = widget.validationSessionId;
-    if (validationSessionId == null || validationSessionId.isEmpty) {
-      return 'bleunlock-diagnostics';
-    }
-    return 'bleunlock-diagnostics-$validationSessionId';
-  }
+  String get _diagnosticExportPrefix => 'bleunlock-diagnostics';
 
-  String _diagnosticJsonLine(DashboardLogEntry entry) {
-    final validationSessionId = widget.validationSessionId;
-    if (validationSessionId == null || validationSessionId.isEmpty) {
-      return entry.diagnosticJsonLine;
-    }
-    return jsonEncode({
-      'validationSessionId': validationSessionId,
-      ...entry.toDiagnosticJson(),
-    });
-  }
+  String _diagnosticJsonLine(DashboardLogEntry entry) =>
+      entry.diagnosticJsonLine;
 }
 
 final Directory _defaultExportDirectory = Directory(

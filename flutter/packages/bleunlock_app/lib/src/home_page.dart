@@ -6,9 +6,7 @@ import 'package:bleunlock_app/src/sections/log_section.dart';
 import 'package:bleunlock_app/src/sections/overview_section.dart';
 import 'package:bleunlock_app/src/sections/rules_section.dart';
 import 'package:bleunlock_app/src/sections/system_section.dart';
-import 'package:bleunlock_app/src/sections/validation_section.dart';
 import 'package:bleunlock_app/src/view_models/dashboard_state.dart';
-import 'package:bleunlock_app/src/widgets/status_pill.dart';
 import 'package:flutter/material.dart';
 
 class BLEUnlockHomePage extends StatefulWidget {
@@ -21,7 +19,6 @@ class BLEUnlockHomePage extends StatefulWidget {
 }
 
 class _BLEUnlockHomePageState extends State<BLEUnlockHomePage> {
-  late final String _validationSessionId = _createValidationSessionId();
   late final TextEditingController _serverPortController;
   late final TextEditingController _serverSharedSecretController;
   late final TextEditingController _clientHostController;
@@ -80,6 +77,7 @@ class _BLEUnlockHomePageState extends State<BLEUnlockHomePage> {
                 items: navItems,
                 lockSync: state.lockSync,
                 monitoringStatus: state.snapshot.monitoringStatus,
+                selectedDeviceCount: state.snapshot.selectedDeviceCount,
                 onItemSelected: (item) {
                   setState(() {
                     _selectedItem = item;
@@ -93,8 +91,6 @@ class _BLEUnlockHomePageState extends State<BLEUnlockHomePage> {
                   title: _titleForItem(activeItem, state.lockSync.config.role),
                   subtitle:
                       _subtitleForItem(activeItem, state.lockSync.config.role),
-                  statusLabel: _statusLabelForHeader(state, activeItem),
-                  statusIcon: _statusIconForHeader(state, activeItem),
                   child: _buildContent(
                     item: activeItem,
                     state: state,
@@ -150,6 +146,11 @@ class _BLEUnlockHomePageState extends State<BLEUnlockHomePage> {
             state: state,
           );
         }
+        if (state.lockSync.config.role == LockSyncRole.server) {
+          return _ServerOverviewWorkspace(
+            state: state,
+          );
+        }
         return _WorkspaceScroll(
           child: OverviewSection(
             snapshot: state.snapshot,
@@ -172,7 +173,6 @@ class _BLEUnlockHomePageState extends State<BLEUnlockHomePage> {
             onStartScanning: widget.coordinator.startScanning,
             onStartMonitoring: widget.coordinator.startMonitoring,
             onPauseScanning: widget.coordinator.pause,
-            onLockNow: widget.coordinator.lockNow,
             onRefreshDevices: widget.coordinator.refreshDeviceList,
             onDeviceSelectionChanged: widget.coordinator.setDeviceSelected,
           ),
@@ -181,12 +181,7 @@ class _BLEUnlockHomePageState extends State<BLEUnlockHomePage> {
         return _WorkspaceScroll(
           child: RulesSection(
             config: state.config,
-            canConfigureMacAutoUnlock: state.snapshot.autoUnlockSecretEditable,
-            macAutoUnlockStatusLabel: state.snapshot.autoUnlockCapabilityLabel,
             onConfigChanged: widget.coordinator.updateConfig,
-            onMacAutoUnlockChanged: (enabled) {
-              _handleMacAutoUnlockChanged(context, state, enabled);
-            },
             onResetRulesAndDevices:
                 widget.coordinator.resetRulesAndSelectedDevices,
           ),
@@ -196,26 +191,24 @@ class _BLEUnlockHomePageState extends State<BLEUnlockHomePage> {
           child: SystemSection(
             snapshot: state.snapshot,
             lockSync: state.lockSync,
-            showMacAutoUnlockPassword: state.snapshot.autoUnlockSecretEditable,
+            wakeOnProximity: state.config.wakeOnProximity,
+            macAutoUnlockEnabled: state.config.enableMacAutoUnlock,
+            canConfigureMacAutoUnlock: state.snapshot.autoUnlockSecretEditable,
+            macAutoUnlockStatusLabel: state.snapshot.autoUnlockCapabilityLabel,
             onCapabilitiesRefreshed: widget.coordinator.retryCapabilityCheck,
             onStartupChanged: widget.coordinator.setStartupEnabled,
-            onMacAutoUnlockPasswordSaved:
-                widget.coordinator.setMacAutoUnlockPassword,
-            onMacAutoUnlockPasswordCleared:
-                widget.coordinator.clearMacAutoUnlockPassword,
-            onMacAutoUnlockPermissionSettingsOpened:
-                widget.coordinator.openMacAutoUnlockPermissionSettings,
+            onWakeOnProximityChanged: (enabled) {
+              widget.coordinator.updateConfig(
+                state.config.copyWith(wakeOnProximity: enabled),
+              );
+            },
+            onMacAutoUnlockChanged: (enabled) {
+              _handleMacAutoUnlockChanged(context, state, enabled);
+            },
             onLockSyncConfigChanged: widget.coordinator.updateLockSyncConfig,
             onLockSyncSharedSecretGenerated:
                 widget.coordinator.generateLockSyncSharedSecret,
             onLockSyncRestarted: widget.coordinator.restartLockSync,
-          ),
-        );
-      case _AppNavItem.validation:
-        return _WorkspaceScroll(
-          child: ValidationSection(
-            state: state,
-            validationSessionId: _validationSessionId,
           ),
         );
       case _AppNavItem.logs:
@@ -228,7 +221,6 @@ class _BLEUnlockHomePageState extends State<BLEUnlockHomePage> {
           child: LogSection(
             state: state,
             logs: state.logs,
-            validationSessionId: _validationSessionId,
           ),
         );
     }
@@ -289,7 +281,40 @@ class _BLEUnlockHomePageState extends State<BLEUnlockHomePage> {
       return;
     }
 
-    final confirmed = await showDialog<bool>(
+    if (state.snapshot.autoUnlockPermissionSettingsAvailable) {
+      final openSettings =
+          await _promptMacAutoUnlockPermissionSettings(context);
+      if (!context.mounted || openSettings != true) {
+        return;
+      }
+      await widget.coordinator.openMacAutoUnlockPermissionSettings();
+      return;
+    }
+
+    final confirmed = await _confirmMacAutoUnlockRisk(context);
+    if (!context.mounted || confirmed != true) {
+      return;
+    }
+
+    if (!state.snapshot.autoUnlockSecretConfigured) {
+      final password = await _promptMacAutoUnlockPassword(context);
+      if (!context.mounted || password == null || password.isEmpty) {
+        return;
+      }
+      await widget.coordinator.setMacAutoUnlockPassword(password);
+      if (!widget.coordinator.value.snapshot.autoUnlockSecretConfigured) {
+        return;
+      }
+    }
+
+    widget.coordinator.updateConfig(
+      nextConfig,
+      acknowledgeMacAutoUnlockRisk: true,
+    );
+  }
+
+  Future<bool?> _confirmMacAutoUnlockRisk(BuildContext context) {
+    return showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('要开启 macOS 自动解锁吗？'),
@@ -311,15 +336,91 @@ class _BLEUnlockHomePageState extends State<BLEUnlockHomePage> {
         ],
       ),
     );
+  }
 
-    if (!context.mounted || confirmed != true) {
-      return;
-    }
-
-    widget.coordinator.updateConfig(
-      nextConfig,
-      acknowledgeMacAutoUnlockRisk: true,
+  Future<bool?> _promptMacAutoUnlockPermissionSettings(BuildContext context) {
+    return showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('需要开启辅助功能权限'),
+        content: const Text(
+          'macOS 自动解锁需要辅助功能权限。\n\n'
+          '打开系统设置后，请允许 BLEUnlock 控制这台电脑，再回到应用重新开启自动解锁。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(context).pop(true),
+            icon: const Icon(Icons.settings),
+            label: const Text('打开设置'),
+          ),
+        ],
+      ),
     );
+  }
+
+  Future<String?> _promptMacAutoUnlockPassword(BuildContext context) async {
+    final controller = TextEditingController();
+    var hasInput = false;
+    try {
+      return await showDialog<String>(
+        context: context,
+        builder: (context) {
+          return StatefulBuilder(
+            builder: (context, setDialogState) {
+              void handleChanged(String value) {
+                final nextHasInput = value.isNotEmpty;
+                if (nextHasInput == hasInput) {
+                  return;
+                }
+                setDialogState(() {
+                  hasInput = nextHasInput;
+                });
+              }
+
+              void submit() {
+                if (!hasInput) {
+                  return;
+                }
+                Navigator.of(context).pop(controller.text);
+              }
+
+              return AlertDialog(
+                title: const Text('输入 macOS 解锁密码'),
+                content: TextField(
+                  controller: controller,
+                  autofocus: true,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                    labelText: '密码',
+                    prefixIcon: Icon(Icons.key),
+                    border: OutlineInputBorder(),
+                  ),
+                  onChanged: handleChanged,
+                  onSubmitted: (_) => submit(),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('取消'),
+                  ),
+                  FilledButton.icon(
+                    onPressed: hasInput ? submit : null,
+                    icon: const Icon(Icons.save),
+                    label: const Text('保存并开启'),
+                  ),
+                ],
+              );
+            },
+          );
+        },
+      );
+    } finally {
+      controller.dispose();
+    }
   }
 }
 
@@ -327,15 +428,11 @@ class _MainWorkspace extends StatelessWidget {
   const _MainWorkspace({
     required this.title,
     required this.subtitle,
-    required this.statusLabel,
-    required this.statusIcon,
     required this.child,
   });
 
   final String title;
   final String subtitle;
-  final String statusLabel;
-  final IconData statusIcon;
   final Widget child;
 
   @override
@@ -351,28 +448,20 @@ class _MainWorkspace extends StatelessWidget {
               bottom: BorderSide(color: Color(0xFFE2E8E7)),
             ),
           ),
-          child: Row(
+          child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      style: Theme.of(context).textTheme.headlineMedium,
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      subtitle,
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            color: const Color(0xFF62716E),
-                          ),
-                    ),
-                  ],
-                ),
+              Text(
+                title,
+                style: Theme.of(context).textTheme.headlineMedium,
               ),
-              StatusPill(label: statusLabel, icon: statusIcon),
+              const SizedBox(height: 6),
+              Text(
+                subtitle,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: const Color(0xFF62716E),
+                    ),
+              ),
             ],
           ),
         ),
@@ -388,6 +477,7 @@ class _AppSidebar extends StatelessWidget {
     required this.items,
     required this.lockSync,
     required this.monitoringStatus,
+    required this.selectedDeviceCount,
     required this.onItemSelected,
     required this.onLockNow,
   });
@@ -396,6 +486,7 @@ class _AppSidebar extends StatelessWidget {
   final List<_AppNavItem> items;
   final LockSyncSnapshot lockSync;
   final String monitoringStatus;
+  final int selectedDeviceCount;
   final ValueChanged<_AppNavItem> onItemSelected;
   final Future<void> Function({String reason}) onLockNow;
 
@@ -445,6 +536,7 @@ class _AppSidebar extends StatelessWidget {
             role: lockSync.config.role,
             lockSync: lockSync,
             monitoringStatus: monitoringStatus,
+            selectedDeviceCount: selectedDeviceCount,
           ),
           const SizedBox(height: 18),
           for (final item in items)
@@ -470,18 +562,25 @@ class _SidebarStatusCard extends StatelessWidget {
     required this.role,
     required this.lockSync,
     required this.monitoringStatus,
+    required this.selectedDeviceCount,
   });
 
   final LockSyncRole role;
   final LockSyncSnapshot lockSync;
   final String monitoringStatus;
+  final int selectedDeviceCount;
 
   @override
   Widget build(BuildContext context) {
     final roleLabel = zhDisplayText(role.label);
-    final status = role == LockSyncRole.disabled
-        ? zhDisplayText(monitoringStatus)
-        : zhDisplayText(lockSync.statusLabel);
+    final bleStatus =
+        'BLE ${zhDisplayText(monitoringStatus)} · 已选 $selectedDeviceCount';
+    final syncStatus = '$roleLabel ${zhDisplayText(lockSync.statusLabel)}';
+    final detail = role == LockSyncRole.disabled
+        ? null
+        : lockSync.endpointLabel == '--'
+            ? null
+            : lockSync.endpointLabel;
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -489,28 +588,40 @@ class _SidebarStatusCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(8),
         border: Border.all(color: const Color(0xFFDDE6E4)),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(_roleIcon(role), color: const Color(0xFF006A62)),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(roleLabel),
-                const SizedBox(height: 2),
-                Text(
-                  status,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: const Color(0xFF687672),
-                      ),
-                ),
-              ],
+          Text(roleLabel),
+          const SizedBox(height: 2),
+          _SidebarStatusLine(text: bleStatus),
+          if (role != LockSyncRole.disabled) ...[
+            const SizedBox(height: 2),
+            _SidebarStatusLine(
+              text: detail == null ? syncStatus : '$syncStatus · $detail',
             ),
-          ),
+          ],
         ],
       ),
+    );
+  }
+}
+
+class _SidebarStatusLine extends StatelessWidget {
+  const _SidebarStatusLine({
+    required this.text,
+  });
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      text,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+            color: const Color(0xFF687672),
+          ),
     );
   }
 }
@@ -608,8 +719,6 @@ class _RoleModeWorkspace extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _RoleSummaryStrip(lockSync: lockSync),
-          const SizedBox(height: 16),
           LayoutBuilder(
             builder: (context, constraints) {
               final serverEnabled = lockSync.config.role != LockSyncRole.client;
@@ -656,52 +765,6 @@ class _RoleModeWorkspace extends StatelessWidget {
                 ],
               );
             },
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _RoleSummaryStrip extends StatelessWidget {
-  const _RoleSummaryStrip({required this.lockSync});
-
-  final LockSyncSnapshot lockSync;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF7FBFA),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: const Color(0xFFD6E2DF)),
-      ),
-      child: Row(
-        children: [
-          Icon(_roleIcon(lockSync.config.role), color: const Color(0xFF006A62)),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  _roleSummaryTitle(lockSync.config.role),
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  _roleSummarySubtitle(lockSync),
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: const Color(0xFF5F6D69),
-                      ),
-                ),
-              ],
-            ),
-          ),
-          StatusPill(
-            label: zhDisplayText(lockSync.statusLabel),
-            icon: _lockSyncStatusIcon(lockSync),
           ),
         ],
       ),
@@ -1022,6 +1085,99 @@ class _ModePanel extends StatelessWidget {
   }
 }
 
+class _ServerOverviewWorkspace extends StatelessWidget {
+  const _ServerOverviewWorkspace({
+    required this.state,
+  });
+
+  final DashboardState state;
+
+  @override
+  Widget build(BuildContext context) {
+    return _WorkspaceScroll(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _ServerHeroPanel(
+            lockSync: state.lockSync,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ServerHeroPanel extends StatelessWidget {
+  const _ServerHeroPanel({
+    required this.lockSync,
+  });
+
+  final LockSyncSnapshot lockSync;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: const Color(0xFFEAF4F2),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: const BoxDecoration(
+                  color: Color(0xFF006A62),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.cast_connected, color: Colors.white),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '主控端',
+                      style: Theme.of(context).textTheme.headlineSmall,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '依据本机 BLE 距离规则通知 Client 锁屏。',
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            color: const Color(0xFF4A5D59),
+                          ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 22),
+          _RoleOverviewMetricGrid(
+            items: [
+              _RoleOverviewMetric(
+                label: 'Client',
+                value: lockSync.connectedClientCount.toString(),
+                icon: Icons.devices_outlined,
+              ),
+              _RoleOverviewMetric(
+                label: '最近事件',
+                value: lockSync.lastEventLabel ?? '无',
+                icon: Icons.bolt_outlined,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _ClientOverviewWorkspace extends StatelessWidget {
   const _ClientOverviewWorkspace({
     required this.state,
@@ -1061,7 +1217,6 @@ class _ClientHeroPanel extends StatelessWidget {
       decoration: BoxDecoration(
         color: const Color(0xFFEAF4F2),
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: const Color(0xFFB8CCC7)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1099,24 +1254,24 @@ class _ClientHeroPanel extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 22),
-          _ClientMetricGrid(
+          _RoleOverviewMetricGrid(
             items: [
-              _ClientMetric(
+              _RoleOverviewMetric(
                 label: '连接状态',
                 value: zhDisplayText(lockSync.statusLabel),
                 icon: _lockSyncStatusIcon(lockSync),
               ),
-              _ClientMetric(
+              _RoleOverviewMetric(
                 label: 'Server',
                 value: lockSync.endpointLabel,
                 icon: Icons.dns_outlined,
               ),
-              _ClientMetric(
+              _RoleOverviewMetric(
                 label: '最近事件',
                 value: lockSync.lastEventLabel ?? '无',
                 icon: Icons.bolt_outlined,
               ),
-              _ClientMetric(
+              _RoleOverviewMetric(
                 label: '最近动作',
                 value: zhDisplayText(snapshot.lastActionLabel),
                 icon: Icons.lock_outline,
@@ -1199,10 +1354,10 @@ class _ClientLogTile extends StatelessWidget {
   }
 }
 
-class _ClientMetricGrid extends StatelessWidget {
-  const _ClientMetricGrid({required this.items});
+class _RoleOverviewMetricGrid extends StatelessWidget {
+  const _RoleOverviewMetricGrid({required this.items});
 
-  final List<_ClientMetric> items;
+  final List<_RoleOverviewMetric> items;
 
   @override
   Widget build(BuildContext context) {
@@ -1219,7 +1374,7 @@ class _ClientMetricGrid extends StatelessWidget {
             for (final item in items)
               SizedBox(
                 width: itemWidth,
-                child: _ClientMetricTile(item: item),
+                child: _RoleOverviewMetricTile(item: item),
               ),
           ],
         );
@@ -1228,10 +1383,10 @@ class _ClientMetricGrid extends StatelessWidget {
   }
 }
 
-class _ClientMetricTile extends StatelessWidget {
-  const _ClientMetricTile({required this.item});
+class _RoleOverviewMetricTile extends StatelessWidget {
+  const _RoleOverviewMetricTile({required this.item});
 
-  final _ClientMetric item;
+  final _RoleOverviewMetric item;
 
   @override
   Widget build(BuildContext context) {
@@ -1272,8 +1427,8 @@ class _ClientMetricTile extends StatelessWidget {
   }
 }
 
-class _ClientMetric {
-  const _ClientMetric({
+class _RoleOverviewMetric {
+  const _RoleOverviewMetric({
     required this.label,
     required this.value,
     required this.icon,
@@ -1300,7 +1455,6 @@ class _PlainPanel extends StatelessWidget {
       decoration: BoxDecoration(
         color: const Color(0xFFFAFCFC),
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: const Color(0xFFD6E2DF)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1334,23 +1488,25 @@ enum _AppNavItem {
   devices,
   rules,
   system,
-  validation,
   logs,
 }
 
 List<_AppNavItem> _navItemsForRole(LockSyncRole role) {
-  if (role == LockSyncRole.client) {
-    return const [_AppNavItem.role, _AppNavItem.overview, _AppNavItem.logs];
+  switch (role) {
+    case LockSyncRole.disabled:
+      return const [_AppNavItem.role, _AppNavItem.system, _AppNavItem.logs];
+    case LockSyncRole.client:
+      return const [_AppNavItem.role, _AppNavItem.overview, _AppNavItem.logs];
+    case LockSyncRole.server:
+      return const [
+        _AppNavItem.role,
+        _AppNavItem.overview,
+        _AppNavItem.devices,
+        _AppNavItem.rules,
+        _AppNavItem.system,
+        _AppNavItem.logs,
+      ];
   }
-  return const [
-    _AppNavItem.role,
-    _AppNavItem.overview,
-    _AppNavItem.devices,
-    _AppNavItem.rules,
-    _AppNavItem.system,
-    _AppNavItem.validation,
-    _AppNavItem.logs,
-  ];
 }
 
 String _labelForItem(_AppNavItem item) {
@@ -1365,8 +1521,6 @@ String _labelForItem(_AppNavItem item) {
       return '规则';
     case _AppNavItem.system:
       return '系统';
-    case _AppNavItem.validation:
-      return '验收';
     case _AppNavItem.logs:
       return '日志';
   }
@@ -1384,8 +1538,6 @@ IconData _iconForItem(_AppNavItem item) {
       return Icons.tune;
     case _AppNavItem.system:
       return Icons.settings_outlined;
-    case _AppNavItem.validation:
-      return Icons.verified_outlined;
     case _AppNavItem.logs:
       return Icons.article_outlined;
   }
@@ -1400,40 +1552,25 @@ String _subtitleForItem(_AppNavItem item, LockSyncRole role) {
     case _AppNavItem.role:
       return '选择这台电脑在 BLEUnlock 网络中的角色。';
     case _AppNavItem.overview:
-      return role == LockSyncRole.client
-          ? '查看 Client 连接状态和最近事件。'
-          : '查看当前监听状态、最近动作和本机锁屏入口。';
+      switch (role) {
+        case LockSyncRole.server:
+          return '查看 Client 数量和最近事件。';
+        case LockSyncRole.client:
+          return '查看 Client 连接状态和最近事件。';
+        case LockSyncRole.disabled:
+          return '查看当前监听状态、最近动作和本机锁屏入口。';
+      }
     case _AppNavItem.devices:
       return '扫描并选择用于距离判断的 BLE 设备。';
     case _AppNavItem.rules:
-      return '配置距离阈值、锁屏延迟和自动解锁策略。';
+      return '配置距离阈值、锁屏延迟和判定策略。';
     case _AppNavItem.system:
-      return '查看平台能力、启动项和系统集成状态。';
-    case _AppNavItem.validation:
-      return '导出运行证据并完成桌面端验收检查。';
+      return '配置可操作的系统集成项。';
     case _AppNavItem.logs:
       return role == LockSyncRole.client
           ? '只显示 Client 与 Server 的同步事件。'
           : '查看扫描、判定、动作和错误日志。';
   }
-}
-
-String _statusLabelForHeader(DashboardState state, _AppNavItem item) {
-  if (item == _AppNavItem.role ||
-      state.lockSync.config.role == LockSyncRole.client) {
-    return zhDisplayText(state.lockSync.statusLabel);
-  }
-  return zhDisplayText(state.snapshot.monitoringStatus);
-}
-
-IconData _statusIconForHeader(DashboardState state, _AppNavItem item) {
-  if (item == _AppNavItem.role ||
-      state.lockSync.config.role == LockSyncRole.client) {
-    return _lockSyncStatusIcon(state.lockSync);
-  }
-  return state.snapshot.monitoringStatus == 'Monitoring'
-      ? Icons.radar
-      : Icons.pause_circle_outline;
 }
 
 IconData _lockSyncStatusIcon(LockSyncSnapshot snapshot) {
@@ -1458,17 +1595,6 @@ IconData _lockSyncStatusIcon(LockSyncSnapshot snapshot) {
   }
 }
 
-IconData _roleIcon(LockSyncRole role) {
-  switch (role) {
-    case LockSyncRole.disabled:
-      return Icons.radio_button_unchecked;
-    case LockSyncRole.server:
-      return Icons.cast_connected;
-    case LockSyncRole.client:
-      return Icons.desktop_windows_outlined;
-  }
-}
-
 String _roleDescription(LockSyncRole role) {
   switch (role) {
     case LockSyncRole.disabled:
@@ -1477,28 +1603,6 @@ String _roleDescription(LockSyncRole role) {
       return '主控端';
     case LockSyncRole.client:
       return '受控端';
-  }
-}
-
-String _roleSummaryTitle(LockSyncRole role) {
-  switch (role) {
-    case LockSyncRole.disabled:
-      return '选择运行模式';
-    case LockSyncRole.server:
-      return 'Server 正在作为主控端工作';
-    case LockSyncRole.client:
-      return 'Client 正在作为受控端工作';
-  }
-}
-
-String _roleSummarySubtitle(LockSyncSnapshot lockSync) {
-  switch (lockSync.config.role) {
-    case LockSyncRole.disabled:
-      return '可以保持单机 BLE 模式，也可以启用 Server/Client 主从同步。';
-    case LockSyncRole.server:
-      return '监听 ${lockSync.endpointLabel}，向已连接 Client 下发锁屏事件。';
-    case LockSyncRole.client:
-      return '连接 ${lockSync.endpointLabel}，等待 Server 下发锁屏事件。';
   }
 }
 
@@ -1518,12 +1622,4 @@ String _lockSyncConfigSignature(LockSyncConfig config) {
     config.syncProximityLocks,
     config.syncManualLocks,
   ].join('|');
-}
-
-String _createValidationSessionId() {
-  final timestamp = DateTime.now()
-      .toUtc()
-      .toIso8601String()
-      .replaceAll(RegExp(r'[^0-9A-Za-z]'), '');
-  return 'validation-$timestamp';
 }

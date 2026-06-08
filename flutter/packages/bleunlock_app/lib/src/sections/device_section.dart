@@ -12,7 +12,6 @@ class DeviceSection extends StatefulWidget {
     required this.onStartScanning,
     required this.onStartMonitoring,
     required this.onPauseScanning,
-    required this.onLockNow,
     required this.onRefreshDevices,
     required this.onDeviceSelectionChanged,
     super.key,
@@ -23,7 +22,6 @@ class DeviceSection extends StatefulWidget {
   final VoidCallback onStartScanning;
   final VoidCallback onStartMonitoring;
   final VoidCallback onPauseScanning;
-  final VoidCallback onLockNow;
   final VoidCallback onRefreshDevices;
   final void Function(String deviceId, bool isSelected)
       onDeviceSelectionChanged;
@@ -61,6 +59,7 @@ class _DeviceSectionState extends State<DeviceSection> {
     return SectionCard(
       title: '设备',
       icon: Icons.bluetooth_searching,
+      showHeader: false,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -98,7 +97,6 @@ class _DeviceSectionState extends State<DeviceSection> {
             onStartScanning: widget.onStartScanning,
             onStartMonitoring: widget.onStartMonitoring,
             onPauseScanning: widget.onPauseScanning,
-            onLockNow: widget.onLockNow,
             onRefreshDevices: widget.onRefreshDevices,
             canStartMonitoring: hasSelectedDevice,
             monitoringHint:

@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:bleunlock_app/src/controllers/app_coordinator.dart';
 import 'package:bleunlock_app/src/home_page.dart';
+import 'package:bleunlock_app/src/lock_sync/lock_sync_models.dart';
 import 'package:bleunlock_app/src/platforms/mock_bleunlock_platform.dart';
 import 'package:bleunlock_app/src/sections/device_section.dart';
 import 'package:bleunlock_app/src/sections/log_section.dart';
@@ -32,17 +33,10 @@ void main() {
     await _pumpHomePage(tester, coordinator);
 
     expect(find.text('BLEUnlock'), findsOneWidget);
-    expect(find.text('总览'), findsWidgets);
-    expect(find.text('设备'), findsOneWidget);
-    expect(find.byType(TabBar), findsOneWidget);
-    expect(find.byType(TabBarView), findsOneWidget);
-
-    await tester.tap(find.text('规则'));
-    await tester.pumpAndSettle();
-    expect(find.text('规则'), findsWidgets);
-    expect(find.text('-60 dBm'), findsOneWidget);
-    expect(find.text('-80 dBm'), findsOneWidget);
-    expect(find.text('靠近逻辑'), findsOneWidget);
+    expect(find.text('运行模式'), findsWidgets);
+    expect(find.text('总览'), findsNothing);
+    expect(find.text('设备'), findsNothing);
+    expect(find.text('规则'), findsNothing);
 
     await tester.tap(find.text('系统'));
     await tester.pumpAndSettle();
@@ -54,17 +48,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('日志'), findsWidgets);
     expect(find.byIcon(Icons.article_outlined), findsWidgets);
-
-    await tester.tap(find.text('验收'));
-    await tester.pumpAndSettle();
-    expect(
-      find.text('验收', skipOffstage: false),
-      findsWidgets,
-    );
-    expect(
-      find.byIcon(Icons.verified_outlined, skipOffstage: false),
-      findsWidgets,
-    );
+    expect(find.text('验收'), findsNothing);
 
     await _disposeCoordinator(tester, coordinator);
   });
@@ -75,6 +59,9 @@ void main() {
     );
     final coordinator = AppCoordinator(platform: platform);
 
+    await coordinator.updateLockSyncConfig(
+      const LockSyncConfig(role: LockSyncRole.server),
+    );
     await _pumpHomePage(tester, coordinator);
 
     await coordinator.startScanning();
@@ -130,6 +117,9 @@ void main() {
       deviceListRefreshInterval: const Duration(seconds: 5),
     );
 
+    await coordinator.updateLockSyncConfig(
+      const LockSyncConfig(role: LockSyncRole.server),
+    );
     await _pumpHomePage(tester, coordinator);
     await coordinator.startScanning();
     platform.emitScan(
@@ -317,7 +307,6 @@ void main() {
             onRefreshDevices: () {},
             onStartMonitoring: () {},
             onPauseScanning: () {},
-            onLockNow: () {},
             onDeviceSelectionChanged: (_, __) {},
           ),
         ),
@@ -400,13 +389,62 @@ void main() {
           body: SingleChildScrollView(
             child: RulesSection(
               config: latest,
-              canConfigureMacAutoUnlock: true,
-              macAutoUnlockStatusLabel: 'supported',
               onConfigChanged: (config) {
                 latest = config;
               },
-              onMacAutoUnlockChanged: (enabled) {
-                latest = latest.copyWith(enableMacAutoUnlock: enabled);
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.ensureVisible(find.text('靠近逻辑'));
+    await tester.tap(find.text('全部').first);
+    await tester.pump();
+
+    expect(latest.unlockDeviceLogic, UnlockDeviceLogic.allClose);
+    expect(find.text('靠近时唤醒'), findsNothing);
+    expect(find.text('macOS 自动解锁'), findsNothing);
+  });
+
+  testWidgets('system controls emit wake and auto unlock changes',
+      (tester) async {
+    var wakeOnProximity = false;
+    var macAutoUnlockEnabled = false;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SingleChildScrollView(
+            child: SystemSection(
+              snapshot: const DashboardSnapshot(
+                monitoringStatus: 'Monitoring paused',
+                stateLabel: 'Idle',
+                bestRssi: null,
+                selectedDeviceCount: 0,
+                lastActionLabel: 'None',
+                bluetoothCapabilityLabel: 'supported',
+                autoLockCapabilityLabel: 'supported',
+                wakeCapabilityLabel: 'supported',
+                autoUnlockCapabilityLabel: 'supported',
+                trayCapabilityLabel: 'supported',
+                startupCapabilityLabel: 'supported',
+                startupEnabled: false,
+                autoUnlockSecretConfigured: true,
+                autoUnlockSecretEditable: true,
+                autoUnlockPermissionSettingsAvailable: false,
+              ),
+              wakeOnProximity: wakeOnProximity,
+              macAutoUnlockEnabled: macAutoUnlockEnabled,
+              canConfigureMacAutoUnlock: true,
+              macAutoUnlockStatusLabel: 'supported',
+              onCapabilitiesRefreshed: () async {},
+              onStartupChanged: (_) {},
+              onWakeOnProximityChanged: (value) {
+                wakeOnProximity = value;
+              },
+              onMacAutoUnlockChanged: (value) {
+                macAutoUnlockEnabled = value;
               },
             ),
           ),
@@ -418,22 +456,16 @@ void main() {
     await tester.tap(find.byType(Switch).first);
     await tester.pump();
 
-    expect(latest.wakeOnProximity, isTrue);
-
-    await tester.ensureVisible(find.text('靠近逻辑'));
-    await tester.tap(find.text('全部').first);
-    await tester.pump();
-
-    expect(latest.unlockDeviceLogic, UnlockDeviceLogic.allClose);
+    expect(wakeOnProximity, isTrue);
 
     await tester.ensureVisible(find.text('macOS 自动解锁'));
-    await tester.tap(find.byType(Switch).last);
+    await tester.tap(find.byType(Switch).at(1));
     await tester.pump();
 
-    expect(latest.enableMacAutoUnlock, isTrue);
+    expect(macAutoUnlockEnabled, isTrue);
   });
 
-  testWidgets('macOS auto unlock switch is disabled when unsupported',
+  testWidgets('system auto unlock switch is disabled when unsupported',
       (tester) async {
     var wasCalled = false;
 
@@ -441,11 +473,31 @@ void main() {
       MaterialApp(
         home: Scaffold(
           body: SingleChildScrollView(
-            child: RulesSection(
-              config: const ProximityConfig(),
+            child: SystemSection(
+              snapshot: const DashboardSnapshot(
+                monitoringStatus: 'Monitoring paused',
+                stateLabel: 'Idle',
+                bestRssi: null,
+                selectedDeviceCount: 0,
+                lastActionLabel: 'None',
+                bluetoothCapabilityLabel: 'supported',
+                autoLockCapabilityLabel: 'supported',
+                wakeCapabilityLabel: 'supported',
+                autoUnlockCapabilityLabel: 'unsupported',
+                trayCapabilityLabel: 'supported',
+                startupCapabilityLabel: 'supported',
+                startupEnabled: false,
+                autoUnlockSecretConfigured: false,
+                autoUnlockSecretEditable: false,
+                autoUnlockPermissionSettingsAvailable: false,
+              ),
+              wakeOnProximity: false,
+              macAutoUnlockEnabled: false,
               canConfigureMacAutoUnlock: false,
               macAutoUnlockStatusLabel: 'unsupported',
-              onConfigChanged: (_) {},
+              onCapabilitiesRefreshed: () async {},
+              onStartupChanged: (_) {},
+              onWakeOnProximityChanged: (_) {},
               onMacAutoUnlockChanged: (_) {
                 wasCalled = true;
               },
@@ -463,17 +515,37 @@ void main() {
     expect(find.text('不支持'), findsOneWidget);
   });
 
-  testWidgets('macOS auto unlock switch shows missing password status',
+  testWidgets('system auto unlock switch shows missing password status',
       (tester) async {
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
           body: SingleChildScrollView(
-            child: RulesSection(
-              config: const ProximityConfig(enableMacAutoUnlock: true),
+            child: SystemSection(
+              snapshot: const DashboardSnapshot(
+                monitoringStatus: 'Monitoring paused',
+                stateLabel: 'Idle',
+                bestRssi: null,
+                selectedDeviceCount: 0,
+                lastActionLabel: 'None',
+                bluetoothCapabilityLabel: 'supported',
+                autoLockCapabilityLabel: 'supported',
+                wakeCapabilityLabel: 'supported',
+                autoUnlockCapabilityLabel: 'missing secret',
+                trayCapabilityLabel: 'supported',
+                startupCapabilityLabel: 'supported',
+                startupEnabled: false,
+                autoUnlockSecretConfigured: false,
+                autoUnlockSecretEditable: true,
+                autoUnlockPermissionSettingsAvailable: false,
+              ),
+              wakeOnProximity: false,
+              macAutoUnlockEnabled: true,
               canConfigureMacAutoUnlock: true,
               macAutoUnlockStatusLabel: 'missing secret',
-              onConfigChanged: (_) {},
+              onCapabilitiesRefreshed: () async {},
+              onStartupChanged: (_) {},
+              onWakeOnProximityChanged: (_) {},
               onMacAutoUnlockChanged: (_) {},
             ),
           ),
@@ -485,6 +557,7 @@ void main() {
     await tester.pump();
 
     expect(find.text('缺少密码'), findsOneWidget);
+    expect(find.text('macOS 解锁密码'), findsNothing);
   });
 
   testWidgets('unsupported auto unlock does not show password input',
@@ -510,24 +583,27 @@ void main() {
               autoUnlockSecretEditable: false,
               autoUnlockPermissionSettingsAvailable: false,
             ),
-            showMacAutoUnlockPassword: true,
+            wakeOnProximity: false,
+            macAutoUnlockEnabled: false,
+            canConfigureMacAutoUnlock: false,
+            macAutoUnlockStatusLabel: 'unsupported',
             onCapabilitiesRefreshed: () async {},
             onStartupChanged: (_) {},
-            onMacAutoUnlockPasswordSaved: (_) async {},
-            onMacAutoUnlockPasswordCleared: () async {},
-            onMacAutoUnlockPermissionSettingsOpened: () async {},
+            onWakeOnProximityChanged: (_) {},
+            onMacAutoUnlockChanged: (_) {},
           ),
         ),
       ),
     );
 
-    expect(find.text('自动解锁'), findsOneWidget);
+    expect(find.text('macOS 自动解锁'), findsOneWidget);
     expect(find.text('不支持'), findsOneWidget);
     expect(find.text('macOS 解锁密码'), findsNothing);
     expect(find.byType(TextField), findsNothing);
   });
 
-  testWidgets('supported auto unlock shows password input before enabled',
+  testWidgets(
+      'supported auto unlock does not show password input before enabled',
       (tester) async {
     await tester.pumpWidget(
       MaterialApp(
@@ -550,21 +626,23 @@ void main() {
               autoUnlockSecretEditable: true,
               autoUnlockPermissionSettingsAvailable: false,
             ),
-            showMacAutoUnlockPassword: true,
+            wakeOnProximity: false,
+            macAutoUnlockEnabled: false,
+            canConfigureMacAutoUnlock: true,
+            macAutoUnlockStatusLabel: 'missing secret',
             onCapabilitiesRefreshed: () async {},
             onStartupChanged: (_) {},
-            onMacAutoUnlockPasswordSaved: (_) async {},
-            onMacAutoUnlockPasswordCleared: () async {},
-            onMacAutoUnlockPermissionSettingsOpened: () async {},
+            onWakeOnProximityChanged: (_) {},
+            onMacAutoUnlockChanged: (_) {},
           ),
         ),
       ),
     );
 
-    expect(find.text('自动解锁'), findsOneWidget);
-    expect(find.text('缺失'), findsOneWidget);
-    expect(find.text('macOS 解锁密码'), findsOneWidget);
-    expect(find.byType(TextField), findsOneWidget);
+    expect(find.text('macOS 自动解锁'), findsOneWidget);
+    expect(find.text('缺少密码'), findsOneWidget);
+    expect(find.text('macOS 解锁密码'), findsNothing);
+    expect(find.byType(TextField), findsNothing);
   });
 
   testWidgets('opens macOS accessibility settings when permission is denied',
@@ -573,6 +651,7 @@ void main() {
       unlockCapability: const CapabilityStatus.permissionDenied(
         'Accessibility permission is required',
       ),
+      platformLabel: 'macos',
     );
     final coordinator = AppCoordinator(platform: platform);
 
@@ -597,7 +676,7 @@ void main() {
     await _disposeCoordinator(tester, coordinator);
   });
 
-  testWidgets('system section shows Windows Credential Provider status', (
+  testWidgets('system section only shows actionable Windows controls', (
     tester,
   ) async {
     await tester.pumpWidget(
@@ -622,19 +701,23 @@ void main() {
               autoUnlockSecretEditable: false,
               autoUnlockPermissionSettingsAvailable: false,
             ),
-            showMacAutoUnlockPassword: false,
+            wakeOnProximity: false,
+            macAutoUnlockEnabled: false,
+            canConfigureMacAutoUnlock: false,
+            macAutoUnlockStatusLabel: 'unsupported',
             onCapabilitiesRefreshed: () async {},
             onStartupChanged: (_) {},
-            onMacAutoUnlockPasswordSaved: (_) async {},
-            onMacAutoUnlockPasswordCleared: () async {},
-            onMacAutoUnlockPermissionSettingsOpened: () async {},
+            onWakeOnProximityChanged: (_) {},
+            onMacAutoUnlockChanged: (_) {},
           ),
         ),
       ),
     );
 
-    expect(find.text('Windows Credential Provider 组件未安装'), findsOneWidget);
-    expect(find.text('Windows'), findsWidgets);
+    expect(find.text('Windows Credential Provider 组件未安装'), findsNothing);
+    expect(find.text('Windows'), findsNothing);
+    expect(find.text('刷新能力'), findsOneWidget);
+    expect(find.text('macOS 自动解锁'), findsOneWidget);
   });
 
   testWidgets('validation section shows Windows Credential Provider pill', (
@@ -716,7 +799,6 @@ void main() {
           body: ListView(
             children: [
               LogSection(
-                validationSessionId: 'validation-test-session',
                 logs: [
                   DashboardLogEntry(
                     timestamp: DateTime(2026, 5, 28, 10, 11, 12),
@@ -1375,7 +1457,6 @@ void main() {
           body: ListView(
             children: [
               LogSection(
-                validationSessionId: 'validation-test-session',
                 logs: [
                   DashboardLogEntry(
                     timestamp: DateTime(2026, 5, 28, 10, 11, 12),
@@ -1423,12 +1504,12 @@ void main() {
     expect(files, hasLength(1));
     expect(
       files.single.path,
-      contains('bleunlock-diagnostics-validation-test-session-'),
+      contains('bleunlock-diagnostics-'),
     );
     expect(files.single.readAsStringSync(), contains('"deviceId":"band-1"'));
     expect(
       files.single.readAsStringSync(),
-      contains('"validationSessionId":"validation-test-session"'),
+      isNot(contains('"validationSessionId"')),
     );
     expect(
         files.single.readAsStringSync(), contains('"sessionState":"unlocked"'));
@@ -2668,7 +2749,7 @@ void main() {
     expect(find.textContaining('外部门禁已导出：'), findsOneWidget);
   });
 
-  testWidgets('home page shares validation id across logs and bundles',
+  testWidgets('home page log tab is no longer scoped to validation sessions',
       (tester) async {
     final platform = MockBleunlockPlatform(
       unlockCapability: const CapabilityStatus.unsupported(),
@@ -2686,19 +2767,14 @@ void main() {
     );
     await tester.pump();
 
-    await tester.tap(find.text('验收'));
-    await tester.pumpAndSettle();
-    final validation = tester.widget<ValidationSection>(
-      find.byType(ValidationSection),
-    );
     await tester.tap(find.text('日志'));
     await tester.pumpAndSettle();
     final logs = tester.widget<LogSection>(
       find.byType(LogSection),
     );
 
-    expect(logs.validationSessionId, validation.validationSessionId);
-    expect(logs.validationSessionId, startsWith('validation-'));
+    expect(find.text('验收'), findsNothing);
+    expect(logs.logs, isNotEmpty);
 
     await _disposeCoordinator(tester, coordinator);
   });
@@ -2737,7 +2813,6 @@ Future<void> _pumpDeviceSectionInWidth(
               onRefreshDevices: () {},
               onStartMonitoring: () {},
               onPauseScanning: () {},
-              onLockNow: () {},
               onDeviceSelectionChanged: (_, __) {},
             ),
           ),

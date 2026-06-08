@@ -8,12 +8,14 @@ import 'package:flutter/material.dart';
 class SystemSection extends StatelessWidget {
   const SystemSection({
     required this.snapshot,
-    required this.showMacAutoUnlockPassword,
+    required this.wakeOnProximity,
+    required this.macAutoUnlockEnabled,
+    required this.canConfigureMacAutoUnlock,
+    required this.macAutoUnlockStatusLabel,
     required this.onCapabilitiesRefreshed,
     required this.onStartupChanged,
-    required this.onMacAutoUnlockPasswordSaved,
-    required this.onMacAutoUnlockPasswordCleared,
-    required this.onMacAutoUnlockPermissionSettingsOpened,
+    required this.onWakeOnProximityChanged,
+    required this.onMacAutoUnlockChanged,
     this.lockSync = const LockSyncSnapshot.initial(),
     this.onLockSyncConfigChanged,
     this.onLockSyncSharedSecretGenerated,
@@ -24,12 +26,14 @@ class SystemSection extends StatelessWidget {
 
   final DashboardSnapshot snapshot;
   final LockSyncSnapshot lockSync;
-  final bool showMacAutoUnlockPassword;
+  final bool wakeOnProximity;
+  final bool macAutoUnlockEnabled;
+  final bool canConfigureMacAutoUnlock;
+  final String macAutoUnlockStatusLabel;
   final Future<void> Function() onCapabilitiesRefreshed;
   final ValueChanged<bool> onStartupChanged;
-  final Future<void> Function(String password) onMacAutoUnlockPasswordSaved;
-  final Future<void> Function() onMacAutoUnlockPasswordCleared;
-  final Future<void> Function() onMacAutoUnlockPermissionSettingsOpened;
+  final ValueChanged<bool> onWakeOnProximityChanged;
+  final ValueChanged<bool> onMacAutoUnlockChanged;
   final Future<void> Function(LockSyncConfig config)? onLockSyncConfigChanged;
   final Future<void> Function()? onLockSyncSharedSecretGenerated;
   final Future<void> Function()? onLockSyncRestarted;
@@ -40,62 +44,49 @@ class SystemSection extends StatelessWidget {
     return SectionCard(
       title: '系统',
       icon: Icons.computer,
+      showHeader: false,
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Align(
-            alignment: Alignment.centerRight,
-            child: OutlinedButton.icon(
-              onPressed: onCapabilitiesRefreshed,
-              icon: const Icon(Icons.refresh),
-              label: const Text('刷新能力'),
-            ),
-          ),
-          const SizedBox(height: 8),
-          CapabilityRow(
-            label: '平台',
-            value: snapshot.platformLabel,
-          ),
-          CapabilityRow(
-            label: '蓝牙扫描',
-            value: snapshot.bluetoothCapabilityLabel,
-          ),
-          CapabilityRow(
-            label: '自动锁屏',
-            value: snapshot.autoLockCapabilityLabel,
-          ),
-          CapabilityRow(
-            label: '靠近唤醒',
-            value: snapshot.wakeCapabilityLabel,
-          ),
-          CapabilityRow(
-            label: '自动解锁',
-            value: snapshot.autoUnlockCapabilityLabel,
-          ),
-          if (snapshot.windowsV1ReadinessLabel != null)
-            _WindowsV1ReadinessRow(label: snapshot.windowsV1ReadinessLabel!),
-          if (snapshot.autoUnlockPermissionSettingsAvailable)
-            _AutoUnlockPermissionRow(
-              onOpened: onMacAutoUnlockPermissionSettingsOpened,
-            ),
-          if (showMacAutoUnlockPassword && snapshot.autoUnlockSecretEditable)
-            _AutoUnlockPasswordRow(
-              canEdit: snapshot.autoUnlockSecretEditable,
-              secretLabel: snapshot.autoUnlockSecretLabel,
-              isConfigured: snapshot.autoUnlockSecretConfigured,
-              onSaved: onMacAutoUnlockPasswordSaved,
-              onCleared: onMacAutoUnlockPasswordCleared,
-            ),
-          CapabilityRow(
-            label: '托盘/菜单栏',
-            value: snapshot.trayCapabilityLabel,
-          ),
-          _StartupRow(
-            isEnabled: snapshot.startupEnabled,
-            capabilityLabel: snapshot.startupCapabilityLabel,
-            onChanged: onStartupChanged,
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            children: [
+              _SystemActionTile(
+                label: '能力刷新',
+                icon: Icons.refresh,
+                buttonLabel: '刷新能力',
+                onPressed: onCapabilitiesRefreshed,
+              ),
+              _SystemSwitchTile(
+                label: '靠近时唤醒',
+                icon: Icons.wb_twilight,
+                value: wakeOnProximity,
+                enabled: _isSupportedCapability(snapshot.wakeCapabilityLabel),
+                statusLabel: snapshot.wakeCapabilityLabel,
+                onChanged: onWakeOnProximityChanged,
+              ),
+              _SystemSwitchTile(
+                label: 'macOS 自动解锁',
+                icon: Icons.password,
+                value: macAutoUnlockEnabled,
+                enabled: canConfigureMacAutoUnlock,
+                statusLabel: _macAutoUnlockStatusLabel,
+                onChanged: onMacAutoUnlockChanged,
+              ),
+              _SystemSwitchTile(
+                label: '开机启动',
+                icon: Icons.power_settings_new,
+                value: snapshot.startupEnabled,
+                enabled:
+                    _isSupportedCapability(snapshot.startupCapabilityLabel),
+                statusLabel: snapshot.startupEnabled ? 'enabled' : 'disabled',
+                onChanged: onStartupChanged,
+              ),
+            ],
           ),
           if (showLockSyncSettings) ...[
-            const Divider(height: 32),
+            const SizedBox(height: 20),
             _LockSyncRow(
               snapshot: lockSync,
               onConfigChanged: onLockSyncConfigChanged ?? _ignoreLockSyncConfig,
@@ -108,11 +99,143 @@ class SystemSection extends StatelessWidget {
       ),
     );
   }
+
+  String? get _macAutoUnlockStatusLabel {
+    if (macAutoUnlockStatusLabel == 'supported') {
+      return snapshot.autoUnlockSecretConfigured ? 'configured' : null;
+    }
+    return macAutoUnlockStatusLabel;
+  }
 }
 
 Future<void> _ignoreLockSyncConfig(LockSyncConfig config) async {}
 
 Future<void> _noopFuture() async {}
+
+bool _isSupportedCapability(String label) => label == 'supported';
+
+class _SystemSurface extends StatelessWidget {
+  const _SystemSurface({
+    required this.label,
+    required this.icon,
+    required this.child,
+  });
+
+  final String label;
+  final IconData icon;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 300,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(icon, size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      label,
+                      style: Theme.of(context).textTheme.labelLarge,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              child,
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SystemActionTile extends StatelessWidget {
+  const _SystemActionTile({
+    required this.label,
+    required this.icon,
+    required this.buttonLabel,
+    required this.onPressed,
+  });
+
+  final String label;
+  final IconData icon;
+  final String buttonLabel;
+  final Future<void> Function() onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return _SystemSurface(
+      label: label,
+      icon: icon,
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: OutlinedButton.icon(
+          onPressed: onPressed,
+          icon: Icon(icon),
+          label: Text(buttonLabel),
+        ),
+      ),
+    );
+  }
+}
+
+class _SystemSwitchTile extends StatelessWidget {
+  const _SystemSwitchTile({
+    required this.label,
+    required this.icon,
+    required this.value,
+    required this.enabled,
+    required this.onChanged,
+    this.statusLabel,
+  });
+
+  final String label;
+  final IconData icon;
+  final bool value;
+  final bool enabled;
+  final ValueChanged<bool> onChanged;
+  final String? statusLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    return _SystemSurface(
+      label: label,
+      icon: icon,
+      child: Row(
+        children: [
+          Switch(
+            value: value,
+            onChanged: enabled ? onChanged : null,
+          ),
+          if (statusLabel != null) ...[
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                zhDisplayText(statusLabel!),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.labelMedium,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
 
 class _LockSyncRow extends StatefulWidget {
   const _LockSyncRow({
@@ -356,227 +479,5 @@ class _LockSyncRowState extends State<_LockSyncRow> {
       syncManualLocks: _syncManualLocks,
     );
     widget.onConfigChanged(config);
-  }
-}
-
-class _WindowsV1ReadinessRow extends StatelessWidget {
-  const _WindowsV1ReadinessRow({required this.label});
-
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Icon(Icons.info_outline, size: 18),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              zhDisplayText(label),
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _AutoUnlockPermissionRow extends StatelessWidget {
-  const _AutoUnlockPermissionRow({required this.onOpened});
-
-  final Future<void> Function() onOpened;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Align(
-        alignment: Alignment.centerRight,
-        child: OutlinedButton.icon(
-          onPressed: onOpened,
-          icon: const Icon(Icons.settings_accessibility),
-          label: const Text('打开辅助功能设置'),
-        ),
-      ),
-    );
-  }
-}
-
-class _AutoUnlockPasswordRow extends StatefulWidget {
-  const _AutoUnlockPasswordRow({
-    required this.canEdit,
-    required this.secretLabel,
-    required this.isConfigured,
-    required this.onSaved,
-    required this.onCleared,
-  });
-
-  final bool canEdit;
-  final String secretLabel;
-  final bool isConfigured;
-  final Future<void> Function(String password) onSaved;
-  final Future<void> Function() onCleared;
-
-  @override
-  State<_AutoUnlockPasswordRow> createState() => _AutoUnlockPasswordRowState();
-}
-
-class _AutoUnlockPasswordRowState extends State<_AutoUnlockPasswordRow> {
-  final TextEditingController _controller = TextEditingController();
-  bool _hasInput = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller.addListener(_handleInputChanged);
-  }
-
-  @override
-  void dispose() {
-    _controller
-      ..removeListener(_handleInputChanged)
-      ..dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Expanded(child: Text('macOS 解锁密码')),
-              Text(
-                zhDisplayText(widget.secretLabel),
-                style: Theme.of(context).textTheme.labelMedium,
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final input = TextField(
-                controller: _controller,
-                enabled: widget.canEdit,
-                obscureText: true,
-                decoration: const InputDecoration(
-                  isDense: true,
-                  labelText: '密码',
-                  prefixIcon: Icon(Icons.key),
-                  border: OutlineInputBorder(),
-                ),
-                onSubmitted: widget.canEdit && _hasInput ? _save : null,
-              );
-              final actions = Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  FilledButton.icon(
-                    onPressed: widget.canEdit && _hasInput
-                        ? () => _save(_controller.text)
-                        : null,
-                    icon: const Icon(Icons.save),
-                    label: const Text('保存'),
-                  ),
-                  const SizedBox(width: 4),
-                  IconButton(
-                    onPressed:
-                        widget.canEdit && widget.isConfigured ? _clear : null,
-                    icon: const Icon(Icons.delete_outline),
-                    tooltip: '清除密码',
-                  ),
-                ],
-              );
-
-              if (constraints.maxWidth < 520) {
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    input,
-                    const SizedBox(height: 8),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: actions,
-                    ),
-                  ],
-                );
-              }
-
-              return Row(
-                children: [
-                  Expanded(child: input),
-                  const SizedBox(width: 8),
-                  actions,
-                ],
-              );
-            },
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _handleInputChanged() {
-    final hasInput = _controller.text.isNotEmpty;
-    if (hasInput == _hasInput) {
-      return;
-    }
-    setState(() {
-      _hasInput = hasInput;
-    });
-  }
-
-  Future<void> _save(String password) async {
-    if (password.isEmpty) {
-      return;
-    }
-    await widget.onSaved(password);
-    _controller.clear();
-  }
-
-  Future<void> _clear() async {
-    await widget.onCleared();
-    _controller.clear();
-  }
-}
-
-class _StartupRow extends StatelessWidget {
-  const _StartupRow({
-    required this.isEnabled,
-    required this.capabilityLabel,
-    required this.onChanged,
-  });
-
-  final bool isEnabled;
-  final String capabilityLabel;
-  final ValueChanged<bool> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final isSupported = capabilityLabel == 'supported';
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Row(
-        children: [
-          const Expanded(child: Text('开机启动')),
-          Text(
-            isEnabled ? '已开启' : '已关闭',
-            style: Theme.of(context).textTheme.labelMedium,
-          ),
-          const SizedBox(width: 12),
-          Switch(
-            value: isEnabled,
-            onChanged: isSupported ? onChanged : null,
-          ),
-        ],
-      ),
-    );
   }
 }

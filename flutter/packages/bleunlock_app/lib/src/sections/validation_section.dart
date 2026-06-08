@@ -58,6 +58,7 @@ class _ValidationSectionState extends State<ValidationSection> {
     return SectionCard(
       title: '验收',
       icon: Icons.verified_outlined,
+      showHeader: false,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

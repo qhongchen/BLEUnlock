@@ -6,7 +6,6 @@ class PrimaryActionRow extends StatelessWidget {
     required this.onStartScanning,
     required this.onStartMonitoring,
     required this.onPauseScanning,
-    required this.onLockNow,
     required this.onRefreshDevices,
     required this.canStartMonitoring,
     this.monitoringHint,
@@ -17,7 +16,6 @@ class PrimaryActionRow extends StatelessWidget {
   final VoidCallback onStartScanning;
   final VoidCallback onStartMonitoring;
   final VoidCallback onPauseScanning;
-  final VoidCallback onLockNow;
   final VoidCallback onRefreshDevices;
   final bool canStartMonitoring;
   final String? monitoringHint;
@@ -33,8 +31,9 @@ class PrimaryActionRow extends StatelessWidget {
           children: [
             FilledButton.icon(
               onPressed: isMonitoring ? onPauseScanning : onStartScanning,
-              icon: Icon(isMonitoring ? Icons.pause : Icons.radar),
-              label: Text(isMonitoring ? '暂停扫描' : '开始扫描'),
+              icon:
+                  Icon(isMonitoring ? Icons.stop_circle_outlined : Icons.radar),
+              label: Text(isMonitoring ? '停止监听' : '开始扫描'),
             ),
             FilledButton.tonalIcon(
               onPressed: isMonitoring || !canStartMonitoring
@@ -42,11 +41,6 @@ class PrimaryActionRow extends StatelessWidget {
                   : onStartMonitoring,
               icon: const Icon(Icons.play_arrow),
               label: const Text('开始监听'),
-            ),
-            OutlinedButton.icon(
-              onPressed: onLockNow,
-              icon: const Icon(Icons.lock_outline),
-              label: const Text('立即锁屏'),
             ),
             OutlinedButton.icon(
               onPressed: onRefreshDevices,
