@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:bleunlock_app/src/lock_sync/lock_sync_models.dart';
 import 'package:bleunlock_core/bleunlock_core.dart';
 import 'package:bleunlock_platform_interface/bleunlock_platform_interface.dart';
 
@@ -7,12 +8,14 @@ class AppSettings {
   const AppSettings({
     required this.config,
     required this.selectedDeviceIds,
+    this.lockSyncConfig = const LockSyncConfig(),
     this.windowsIdentityProfiles = const {},
   });
 
   factory AppSettings.fromJson(Map<String, Object?> json) {
     final configJson = json['config'];
     final selectedIdsJson = json['selectedDeviceIds'];
+    final lockSyncJson = json['lockSyncConfig'];
     final windowsProfilesJson = json['windowsIdentityProfiles'];
 
     return AppSettings(
@@ -22,6 +25,9 @@ class AppSettings {
       selectedDeviceIds: selectedIdsJson is List
           ? selectedIdsJson.whereType<String>().toSet()
           : const {},
+      lockSyncConfig: lockSyncJson is Map
+          ? LockSyncConfig.fromJson(lockSyncJson.cast<String, Object?>())
+          : const LockSyncConfig(),
       windowsIdentityProfiles: windowsProfilesJson is Map
           ? _windowsIdentityProfilesFromJson(
               windowsProfilesJson.cast<String, Object?>(),
@@ -32,6 +38,7 @@ class AppSettings {
 
   final ProximityConfig config;
   final Set<String> selectedDeviceIds;
+  final LockSyncConfig lockSyncConfig;
   final Map<String, WindowsBleIdentityProfile> windowsIdentityProfiles;
 
   Map<String, Object?> toJson() {
@@ -44,6 +51,7 @@ class AppSettings {
       'version': 2,
       'config': _configToJson(config),
       'selectedDeviceIds': sortedSelectedIds,
+      if (!lockSyncConfig.isDefault) 'lockSyncConfig': lockSyncConfig.toJson(),
       if (sortedWindowsProfiles.isNotEmpty)
         'windowsIdentityProfiles': {
           for (final entry in sortedWindowsProfiles.entries)

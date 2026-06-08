@@ -1,6 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:math';
 
 import 'package:bleunlock_app/src/controllers/capability_monitor.dart';
+import 'package:bleunlock_app/src/lock_sync/lock_sync_controller.dart';
+import 'package:bleunlock_app/src/lock_sync/lock_sync_models.dart';
 import 'package:bleunlock_app/src/platforms/bleunlock_platform.dart';
 import 'package:bleunlock_app/src/settings/app_settings_repository.dart';
 import 'package:bleunlock_app/src/view_models/dashboard_state.dart';
@@ -17,6 +21,8 @@ class AppCoordinator {
   static const Duration _windowsAppleIdentityCandidateWindow =
       Duration(seconds: 20);
   static const int _windowsAppleCandidateScoreGap = 6;
+  static const int _windowsAppleCandidateRssiGap = 12;
+  static const int _windowsAppleStrongCandidateRssi = -60;
   static const Duration _windowsEnhancedDiscoveryWindow = Duration(seconds: 8);
 
   AppCoordinator({
@@ -31,6 +37,7 @@ class AppCoordinator {
     int unlockRetryLimit = 1,
     Duration tickInterval = const Duration(seconds: 1),
     AppSettingsRepository? settingsRepository,
+    LockSyncController? lockSyncController,
   })  : _engine = ProximityEngine(
           config: config,
           selectedDeviceIds: selectedDeviceIds,
@@ -39,6 +46,7 @@ class AppCoordinator {
         _selectedDeviceIds = {...selectedDeviceIds},
         _settingsRepository = settingsRepository ??
             SecureStoreAppSettingsRepository(platform.secureStore),
+        _lockSyncController = lockSyncController ?? LockSyncController(),
         _capabilityMonitor = CapabilityMonitor(
           platform,
           throttleWindow: capabilityRefreshThrottle,
@@ -60,6 +68,7 @@ class AppCoordinator {
   final Duration _tickInterval;
   final int _unlockRetryLimit;
   final AppSettingsRepository _settingsRepository;
+  final LockSyncController _lockSyncController;
   ProximityEngine _engine;
   ProximityConfig _config;
   final Set<String> _selectedDeviceIds;
@@ -79,6 +88,7 @@ class AppCoordinator {
   StreamSubscription<BleScanEvent>? _scanSubscription;
   StreamSubscription<TrayAction>? _traySubscription;
   StreamSubscription<SessionEvent>? _sessionSubscription;
+  StreamSubscription<LockSyncControllerEvent>? _lockSyncSubscription;
   Timer? _unlockRetryTimer;
   Timer? _wakeUnlockTimer;
   Timer? _tickTimer;
@@ -103,6 +113,7 @@ class AppCoordinator {
   bool _hasLoggedAutoUnlockSuppression = false;
   bool _hasWokenForCurrentCloseCycle = false;
   bool _isWindowsEnhancedDiscoverySwitching = false;
+  LockSyncSnapshot _lockSyncSnapshot = const LockSyncSnapshot.initial();
 
   DashboardState get value => _value;
 
@@ -135,6 +146,9 @@ class AppCoordinator {
     _windowsIdentityProfiles
       ..clear()
       ..addAll(settings.windowsIdentityProfiles);
+    _lockSyncSnapshot = LockSyncSnapshot(config: settings.lockSyncConfig);
+    _ensureLockSyncSubscription();
+    unawaited(_lockSyncController.updateConfig(settings.lockSyncConfig));
     _rebuildEngine();
     _lastActionLabel = 'Settings loaded';
     _appendLog(
@@ -446,6 +460,46 @@ class AppCoordinator {
     _publish(_lastDecision);
   }
 
+  Future<void> updateLockSyncConfig(LockSyncConfig config) async {
+    _ensureLockSyncSubscription();
+    _lockSyncSnapshot = LockSyncSnapshot(config: config);
+    _lastActionLabel = 'Lock sync settings updated';
+    _appendLog(
+      timestamp: DateTime.now(),
+      category: DashboardLogCategory.action,
+      message: _lastActionLabel,
+      reason: 'lockSyncConfigChanged',
+      logPlatform: 'lockSync',
+    );
+    _saveSettings();
+    _publish(_lastDecision);
+    await _lockSyncController.updateConfig(config);
+    _lockSyncSnapshot = _lockSyncController.snapshot;
+    _publish(_lastDecision);
+  }
+
+  Future<void> generateLockSyncSharedSecret() async {
+    final secret = _generateLockSyncSecret();
+    await updateLockSyncConfig(
+      _lockSyncSnapshot.config.copyWith(sharedSecret: secret),
+    );
+  }
+
+  Future<void> restartLockSync() async {
+    _ensureLockSyncSubscription();
+    await _lockSyncController.updateConfig(_lockSyncSnapshot.config);
+    _lockSyncSnapshot = _lockSyncController.snapshot;
+    _lastActionLabel = 'Lock sync restarted';
+    _appendLog(
+      timestamp: DateTime.now(),
+      category: DashboardLogCategory.action,
+      message: _lastActionLabel,
+      reason: 'lockSyncRestarted',
+      logPlatform: 'lockSync',
+    );
+    _publish(_lastDecision);
+  }
+
   Future<void> refreshSystemSettings() async {
     await _refreshCapabilitiesForSystem(
       reason: CapabilityRefreshReason.appStart,
@@ -713,6 +767,7 @@ class AppCoordinator {
         message: _lastActionLabel,
         reason: reason,
       );
+      _broadcastLockSync(reason: 'manualLock', timestamp: DateTime.now());
     } catch (error) {
       _appendPlatformFailureLog(
         timestamp: DateTime.now(),
@@ -762,6 +817,12 @@ class AppCoordinator {
     if (sessionSubscription != null) {
       unawaited(sessionSubscription.cancel());
     }
+    final lockSyncSubscription = _lockSyncSubscription;
+    _lockSyncSubscription = null;
+    if (lockSyncSubscription != null) {
+      unawaited(lockSyncSubscription.cancel());
+    }
+    unawaited(_lockSyncController.dispose());
     unawaited(_states.close());
     unawaited(_commands.close());
   }
@@ -968,9 +1029,6 @@ class AppCoordinator {
         scopedCandidates.first.deviceId != event.deviceId) {
       return null;
     }
-    if (strictCandidates.isEmpty && scopedCandidates.length != 1) {
-      return null;
-    }
     if (_hasAmbiguousWindowsAppleCandidate(scopedCandidates)) {
       return null;
     }
@@ -979,7 +1037,9 @@ class AppCoordinator {
       deviceId: selectedDeviceId,
       reason: strictCandidates.isNotEmpty
           ? 'uniqueWindowsAppleNearbyManufacturerCandidate'
-          : 'uniqueWindowsAppleManufacturerCandidate',
+          : scopedCandidates.length == 1
+              ? 'uniqueWindowsAppleManufacturerCandidate'
+              : 'dominantWindowsAppleManufacturerCandidate',
     );
   }
 
@@ -1037,7 +1097,11 @@ class AppCoordinator {
     }
     final topScore = _windowsAppleCandidateScore(candidates[0]);
     final secondScore = _windowsAppleCandidateScore(candidates[1]);
-    return topScore - secondScore < _windowsAppleCandidateScoreGap;
+    if (topScore - secondScore >= _windowsAppleCandidateScoreGap) {
+      return false;
+    }
+    return candidates[0].rssi < _windowsAppleStrongCandidateRssi ||
+        candidates[0].rssi - candidates[1].rssi < _windowsAppleCandidateRssiGap;
   }
 
   int _windowsAppleCandidateScore(BleScanEvent event) {
@@ -1107,9 +1171,6 @@ class AppCoordinator {
     if (scopedCandidates.isEmpty) {
       return null;
     }
-    if (strictCandidates.isEmpty && scopedCandidates.length != 1) {
-      return null;
-    }
     if (_hasAmbiguousWindowsAppleCandidate(scopedCandidates)) {
       return null;
     }
@@ -1133,12 +1194,12 @@ class AppCoordinator {
       _serviceUuidSet(next),
     );
     final hasManufacturerFingerprintMatch = _hasIntersection(
-      _manufacturerFingerprintSet(previous),
-      _manufacturerFingerprintSet(next),
+      _identityManufacturerFingerprintSet(previous),
+      _identityManufacturerFingerprintSet(next),
     );
     final hasCompanyMatch = _hasIntersection(
-      _manufacturerCompanyIdSet(previous),
-      _manufacturerCompanyIdSet(next),
+      _identityManufacturerCompanyIdSet(previous),
+      _identityManufacturerCompanyIdSet(next),
     );
     final rssiIsClose =
         (previous.rssi - next.rssi).abs() <= _windowsBleIdentityRssiTolerance;
@@ -1207,12 +1268,12 @@ class AppCoordinator {
       _serviceUuidSet(event),
     );
     final hasManufacturerFingerprintMatch = _hasIntersection(
-      profile.manufacturerFingerprints,
-      _manufacturerFingerprintSet(event),
+      _identityProfileManufacturerFingerprints(profile),
+      _identityManufacturerFingerprintSet(event),
     );
     final hasCompanyMatch = _hasIntersection(
-      profile.manufacturerCompanyIds,
-      _manufacturerCompanyIdSet(event),
+      _identityProfileManufacturerCompanyIds(profile),
+      _identityManufacturerCompanyIdSet(event),
     );
 
     if (!hasNameMatch &&
@@ -1329,8 +1390,8 @@ class AppCoordinator {
       },
       deviceInformationIds: _windowsDeviceInformationIdSet(event),
       serviceUuids: _serviceUuidSet(event),
-      manufacturerCompanyIds: _manufacturerCompanyIdSet(event),
-      manufacturerFingerprints: _manufacturerFingerprintSet(event),
+      manufacturerCompanyIds: _identityManufacturerCompanyIdSet(event),
+      manufacturerFingerprints: _identityManufacturerFingerprintSet(event),
       lastSeenAt: event.seenAt,
     );
     _windowsIdentityProfiles[event.deviceId] = next;
@@ -1598,6 +1659,7 @@ class AppCoordinator {
         AppSettings(
           config: config,
           selectedDeviceIds: Set.unmodifiable(_selectedDeviceIds),
+          lockSyncConfig: _lockSyncSnapshot.config,
           windowsIdentityProfiles: Map.unmodifiable(_windowsIdentityProfiles),
         ),
       ),
@@ -1722,6 +1784,75 @@ class AppCoordinator {
         _publish();
       },
     );
+  }
+
+  void _ensureLockSyncSubscription() {
+    if (_lockSyncSubscription != null) {
+      return;
+    }
+
+    _lockSyncSubscription = _lockSyncController.events.listen(
+      (event) {
+        unawaited(_handleLockSyncEvent(event));
+      },
+      onError: (Object error) {
+        _lockSyncSnapshot = _lockSyncController.snapshot;
+        _lastActionLabel = 'Lock sync event stream failed';
+        _appendLog(
+          timestamp: DateTime.now(),
+          category: DashboardLogCategory.error,
+          message: 'Lock sync event stream failed: $error',
+          reason: 'lockSyncEventStreamFailed',
+          logPlatform: 'lockSync',
+        );
+        _publish();
+      },
+    );
+  }
+
+  Future<void> _handleLockSyncEvent(LockSyncControllerEvent event) async {
+    _lockSyncSnapshot = _lockSyncController.snapshot;
+    switch (event.kind) {
+      case LockSyncControllerEventKind.statusChanged:
+        _publish(_lastDecision);
+        return;
+      case LockSyncControllerEventKind.action:
+        _lastActionLabel = event.message;
+        _appendLog(
+          timestamp: event.timestamp,
+          category: DashboardLogCategory.action,
+          message: event.message,
+          reason: event.reason,
+          logPlatform: 'lockSync',
+        );
+        _publish(_lastDecision);
+        return;
+      case LockSyncControllerEventKind.error:
+        _lastActionLabel = event.message;
+        _appendLog(
+          timestamp: event.timestamp,
+          category: DashboardLogCategory.error,
+          message: event.message,
+          reason: event.reason,
+          logPlatform: 'lockSync',
+        );
+        _publish(_lastDecision);
+        return;
+      case LockSyncControllerEventKind.remoteLockRequested:
+        _lastActionLabel = event.message;
+        _appendLog(
+          timestamp: event.timestamp,
+          category: DashboardLogCategory.action,
+          message: event.message,
+          reason: event.reason,
+          logPlatform: 'lockSync',
+        );
+        await _lockFromRemoteSync(
+          reason: event.reason ?? 'remoteLock',
+          timestamp: event.timestamp,
+        );
+        return;
+    }
   }
 
   void _handleTrayAction(TrayAction action) {
@@ -1986,6 +2117,64 @@ class AppCoordinator {
     }
   }
 
+  Future<void> _lockFromRemoteSync({
+    required String reason,
+    required DateTime timestamp,
+  }) async {
+    _ensureSessionSubscription();
+    if (await _isCurrentlyLocked(timestamp)) {
+      _appendLog(
+        timestamp: timestamp,
+        category: DashboardLogCategory.action,
+        message: 'Lock skipped',
+        reason: 'lockSyncAlreadyLocked',
+        logPlatform: 'lockSync',
+      );
+      _publish();
+      return;
+    }
+
+    if (!platform.session.capability.isUsable) {
+      _lastActionLabel = 'Lock unsupported';
+      _appendLog(
+        timestamp: timestamp,
+        category: DashboardLogCategory.error,
+        message: _capabilityFailureMessage(
+          _lastActionLabel,
+          platform.session.capability,
+        ),
+        reason: 'lockSyncUnsupported',
+        logPlatform: 'lockSync',
+      );
+      _publish();
+      return;
+    }
+
+    try {
+      await platform.session.lock();
+      _sessionState = DashboardSessionState.locked;
+      _hasLoggedAlreadyLockedSkip = false;
+      _blockAutoUnlock('remoteLock');
+      _lastActionLabel = 'Locked screen';
+      _appendLog(
+        timestamp: timestamp,
+        category: DashboardLogCategory.action,
+        message: _lastActionLabel,
+        reason: 'lockSyncRemote:$reason',
+        logPlatform: 'lockSync',
+      );
+    } catch (error) {
+      _appendLog(
+        timestamp: timestamp,
+        category: DashboardLogCategory.error,
+        message: 'Lock failed: $error',
+        reason: 'lockSyncLockFailed',
+        logPlatform: 'lockSync',
+      );
+    }
+    _publish();
+  }
+
   Future<void> _lockFromDecision(DateTime timestamp) async {
     if (await _isCurrentlyLocked(timestamp)) {
       if (!_hasLoggedAlreadyLockedSkip) {
@@ -2036,6 +2225,7 @@ class AppCoordinator {
         message: _lastActionLabel,
         reason: 'proximityDecision',
       );
+      _broadcastLockSync(reason: 'proximityLock', timestamp: timestamp);
     } catch (error) {
       _appendPlatformFailureLog(
         timestamp: timestamp,
@@ -2045,6 +2235,28 @@ class AppCoordinator {
       );
     }
     _publish();
+  }
+
+  void _broadcastLockSync({
+    required String reason,
+    required DateTime timestamp,
+  }) {
+    final config = _lockSyncSnapshot.config;
+    if (config.role != LockSyncRole.server) {
+      return;
+    }
+    final shouldSync = reason == 'proximityLock'
+        ? config.syncProximityLocks
+        : reason == 'manualLock' && config.syncManualLocks;
+    if (!shouldSync) {
+      return;
+    }
+    unawaited(
+      _lockSyncController.broadcastLock(
+        reason: reason,
+        timestamp: timestamp,
+      ),
+    );
   }
 
   Future<bool> _isCurrentlyLocked(DateTime timestamp) async {
@@ -2429,6 +2641,7 @@ class AppCoordinator {
         devices: const [],
         logs: List.unmodifiable(_logs),
         config: config,
+        lockSync: _lockSyncSnapshot,
       );
     } else {
       _value = DashboardState(
@@ -2456,6 +2669,7 @@ class AppCoordinator {
         devices: _devicesFromPublishedList(currentDecision),
         logs: List.unmodifiable(_logs),
         config: config,
+        lockSync: _lockSyncSnapshot,
       );
     }
 
@@ -2676,6 +2890,7 @@ class AppCoordinator {
     required DateTime timestamp,
     required DashboardLogCategory category,
     required String message,
+    String? logPlatform,
     String? displayName,
     String? addressHint,
     String? deviceId,
@@ -2691,7 +2906,7 @@ class AppCoordinator {
         timestamp: timestamp,
         category: category,
         message: message,
-        platform: platform.platformLabel,
+        platform: logPlatform ?? platform.platformLabel,
         displayName: displayName,
         addressHint: addressHint,
         deviceId: deviceId,
@@ -3005,6 +3220,36 @@ Set<String> _manufacturerCompanyIdSet(BleScanEvent event) {
   return {companyId.toString()};
 }
 
+Set<String> _identityManufacturerFingerprintSet(BleScanEvent event) {
+  return _manufacturerFingerprintSet(event)
+      .where((value) => !_isAppleManufacturerFingerprint(value))
+      .toSet();
+}
+
+Set<String> _identityManufacturerCompanyIdSet(BleScanEvent event) {
+  return _manufacturerCompanyIdSet(event)
+      .where((value) => value != '76')
+      .toSet();
+}
+
+Set<String> _identityProfileManufacturerFingerprints(
+  WindowsBleIdentityProfile profile,
+) {
+  return profile.manufacturerFingerprints
+      .where((value) => !_isAppleManufacturerFingerprint(value))
+      .toSet();
+}
+
+Set<String> _identityProfileManufacturerCompanyIds(
+  WindowsBleIdentityProfile profile,
+) {
+  return profile.manufacturerCompanyIds.where((value) => value != '76').toSet();
+}
+
+bool _isAppleManufacturerFingerprint(String value) {
+  return value.trim().toLowerCase().startsWith('76:');
+}
+
 String? _manufacturerCompanyId(Map section) {
   final companyId = section['companyId'];
   if (companyId is int) {
@@ -3225,6 +3470,12 @@ String _presenceStateLabel(DevicePresenceState state) {
     case DevicePresenceState.lost:
       return 'lost';
   }
+}
+
+String _generateLockSyncSecret() {
+  final random = Random.secure();
+  final bytes = List<int>.generate(32, (_) => random.nextInt(256));
+  return base64UrlEncode(bytes);
 }
 
 String _capabilityLabel(CapabilityStatus capability) {

@@ -102,6 +102,7 @@ class _BLEUnlockHomePageState extends State<BLEUnlockHomePage> {
                 _TabPage(
                   child: SystemSection(
                     snapshot: state.snapshot,
+                    lockSync: state.lockSync,
                     showMacAutoUnlockPassword:
                         state.snapshot.autoUnlockSecretEditable,
                     onCapabilitiesRefreshed:
@@ -113,6 +114,11 @@ class _BLEUnlockHomePageState extends State<BLEUnlockHomePage> {
                         widget.coordinator.clearMacAutoUnlockPassword,
                     onMacAutoUnlockPermissionSettingsOpened:
                         widget.coordinator.openMacAutoUnlockPermissionSettings,
+                    onLockSyncConfigChanged:
+                        widget.coordinator.updateLockSyncConfig,
+                    onLockSyncSharedSecretGenerated:
+                        widget.coordinator.generateLockSyncSharedSecret,
+                    onLockSyncRestarted: widget.coordinator.restartLockSync,
                   ),
                 ),
                 _TabPage(

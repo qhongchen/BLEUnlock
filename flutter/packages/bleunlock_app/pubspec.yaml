@@ -17,6 +17,7 @@ dependencies:
     path: ../bleunlock_macos
   bleunlock_windows:
     path: ../bleunlock_windows
+  crypto: ^3.0.6
 
 dev_dependencies:
   flutter_test:

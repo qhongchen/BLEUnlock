@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:bleunlock_app/src/lock_sync/lock_sync_models.dart';
 import 'package:bleunlock_core/bleunlock_core.dart';
 import 'package:bleunlock_platform_interface/bleunlock_platform_interface.dart';
 
@@ -1658,17 +1659,20 @@ class DashboardState {
     required this.devices,
     required this.logs,
     required this.config,
+    this.lockSync = const LockSyncSnapshot.initial(),
   });
 
   const DashboardState.initial({this.config = const ProximityConfig()})
       : snapshot = const DashboardSnapshot.initial(),
         devices = const [],
-        logs = const [];
+        logs = const [],
+        lockSync = const LockSyncSnapshot.initial();
 
   final DashboardSnapshot snapshot;
   final List<DashboardDeviceView> devices;
   final List<DashboardLogEntry> logs;
   final ProximityConfig config;
+  final LockSyncSnapshot lockSync;
 
   String get diagnosticLogJsonLines {
     return logs.map((entry) => entry.diagnosticJsonLine).join('\n');
@@ -1711,6 +1715,7 @@ class DashboardState {
         'overallAcceptanceBlockerLabels': overallBlockerLabels,
       'snapshot': snapshot.toDiagnosticJson(),
       'config': _configToDiagnosticJson(config),
+      'lockSync': lockSync.toDiagnosticJson(),
       'devices': devices.map((device) => device.toDiagnosticJson()).toList(),
       'sessionDiagnostics': DashboardSessionDiagnostic.fromLogs(logsForBundle)
           .map((diagnostic) => diagnostic.toDiagnosticJson())
@@ -1764,6 +1769,7 @@ class DashboardState {
         'overallAcceptanceBlockerLabels': overallBlockerLabels,
       'snapshot': snapshot.toDiagnosticJson(),
       'config': _configToDiagnosticJson(config),
+      'lockSync': lockSync.toDiagnosticJson(),
       if (externalValidationGates != null)
         'externalValidationGates': externalValidationGates
             .map((gate) => Map<String, Object?>.from(gate))
