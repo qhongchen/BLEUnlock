@@ -675,7 +675,9 @@ flutter::EncodableMap ScanEventFromSeenDevice(
     const auto source =
         advertisement_event ? std::string("advertisement")
                             : std::string("deviceInformation");
-    const auto event_rssi = advertisement_event ? device.last_rssi : -127;
+    const auto event_rssi =
+        (advertisement_event || device.packet_count > 0) ? device.last_rssi
+                                                         : -127;
     event[flutter::EncodableValue("deviceId")] =
         flutter::EncodableValue(BestDeviceId(device));
     const auto display_name = BestDisplayName(device);

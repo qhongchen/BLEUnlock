@@ -95,6 +95,8 @@ class _BLEUnlockHomePageState extends State<BLEUnlockHomePage> {
                     onMacAutoUnlockChanged: (enabled) {
                       _handleMacAutoUnlockChanged(context, state, enabled);
                     },
+                    onResetRulesAndDevices:
+                        widget.coordinator.resetRulesAndSelectedDevices,
                   ),
                 ),
                 _TabPage(

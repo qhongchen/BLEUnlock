@@ -10,6 +10,7 @@ class RulesSection extends StatelessWidget {
     required this.macAutoUnlockStatusLabel,
     required this.onConfigChanged,
     required this.onMacAutoUnlockChanged,
+    this.onResetRulesAndDevices,
     super.key,
   });
 
@@ -18,6 +19,7 @@ class RulesSection extends StatelessWidget {
   final String macAutoUnlockStatusLabel;
   final ValueChanged<ProximityConfig> onConfigChanged;
   final ValueChanged<bool> onMacAutoUnlockChanged;
+  final VoidCallback? onResetRulesAndDevices;
 
   @override
   Widget build(BuildContext context) {
@@ -139,6 +141,15 @@ class RulesSection extends StatelessWidget {
             statusLabel: _macAutoUnlockStatusLabel,
             onChanged: onMacAutoUnlockChanged,
           ),
+          if (onResetRulesAndDevices != null)
+            SizedBox(
+              width: 300,
+              child: OutlinedButton.icon(
+                onPressed: onResetRulesAndDevices,
+                icon: const Icon(Icons.restart_alt),
+                label: const Text('重置规则和设备'),
+              ),
+            ),
         ],
       ),
     );

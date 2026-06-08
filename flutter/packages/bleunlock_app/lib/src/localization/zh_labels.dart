@@ -271,6 +271,7 @@ const Map<String, String> _exactLabels = {
   'Auto unlock unavailable': '自动解锁不可用',
   'Auto unlock confirmation required': '需要确认自动解锁风险',
   'Rules updated': '规则已更新',
+  'Rules and devices reset': '规则和设备已重置',
   'Startup unavailable': '开机启动不可用',
   'Startup enabled': '开机启动已开启',
   'Startup disabled': '开机启动已关闭',

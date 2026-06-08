@@ -335,6 +335,7 @@ class AppCoordinator {
     if (isSelected) {
       _selectedDeviceIds.add(deviceId);
       _rememberWindowsIdentitySelection(deviceId);
+      _associateSelectedWindowsIphoneWithVisibleAppleCandidate(deviceId);
     } else {
       _selectedDeviceIds.remove(deviceId);
       _windowsDeviceAliases.removeWhere((_, canonicalId) {
@@ -357,6 +358,31 @@ class AppCoordinator {
     _saveSettings();
     if (shouldPauseForEmptySelection) {
       unawaited(pause(reason: 'deviceSelectionChanged'));
+      return;
+    }
+    _publish(_lastDecision);
+  }
+
+  void resetRulesAndSelectedDevices() {
+    final shouldPauseForEmptySelection = _isMonitoring;
+    _config = const ProximityConfig();
+    _selectedDeviceIds.clear();
+    _windowsDeviceAliases.clear();
+    _windowsIdentityProfiles.clear();
+    _lastLoggedScanSamples.clear();
+    _cancelUnlockRetry(reason: 'rulesAndDevicesReset');
+    _cancelWakeUnlockTimer();
+    _rebuildEngine();
+    _lastActionLabel = 'Rules and devices reset';
+    _appendLog(
+      timestamp: DateTime.now(),
+      category: DashboardLogCategory.action,
+      message: _lastActionLabel,
+      reason: 'rulesAndDevicesReset',
+    );
+    _saveSettings();
+    if (shouldPauseForEmptySelection) {
+      unawaited(pause(reason: 'rulesAndDevicesReset'));
       return;
     }
     _publish(_lastDecision);
@@ -1058,6 +1084,38 @@ class AppCoordinator {
         profile?.deviceInformationIds.isNotEmpty == true;
   }
 
+  BleScanEvent? _findVisibleWindowsAppleManufacturerCandidate(
+    DateTime timestamp,
+  ) {
+    final candidates = _visibleDevices.values.where((candidate) {
+      if (_selectedDeviceIds.contains(candidate.deviceId)) {
+        return false;
+      }
+      final age = timestamp.difference(candidate.seenAt);
+      return !age.isNegative &&
+          age <= _windowsAppleIdentityCandidateWindow &&
+          _hasWindowsAdvertisement(candidate) &&
+          _isWindowsAppleManufacturerCandidate(candidate) &&
+          candidate.rssi >= config.minimumVisibleRssi;
+    }).toList()
+      ..sort(_compareWindowsAppleManufacturerCandidates);
+
+    final strictCandidates =
+        candidates.where(_hasWindowsAppleNearbyManufacturerPayload).toList();
+    final scopedCandidates =
+        strictCandidates.isNotEmpty ? strictCandidates : candidates;
+    if (scopedCandidates.isEmpty) {
+      return null;
+    }
+    if (strictCandidates.isEmpty && scopedCandidates.length != 1) {
+      return null;
+    }
+    if (_hasAmbiguousWindowsAppleCandidate(scopedCandidates)) {
+      return null;
+    }
+    return scopedCandidates.first;
+  }
+
   int _windowsBleIdentityMatchScore(
     BleScanEvent previous,
     BleScanEvent next,
@@ -1197,6 +1255,53 @@ class AppCoordinator {
       return;
     }
     _rememberWindowsIdentityObservation(event, forceSelected: true);
+  }
+
+  void _associateSelectedWindowsIphoneWithVisibleAppleCandidate(
+    String selectedDeviceId,
+  ) {
+    if (!_isWindowsPlatform ||
+        !_isWindowsIphoneSystemDiscoverySelection(selectedDeviceId)) {
+      return;
+    }
+
+    final candidate = _findVisibleWindowsAppleManufacturerCandidate(
+      DateTime.now(),
+    );
+    if (candidate == null) {
+      return;
+    }
+
+    final selectedEvent = _visibleDevices[selectedDeviceId] ??
+        _publishedVisibleDevices[selectedDeviceId];
+    final mergedEvent = _mergeScanEvent(
+      selectedEvent,
+      _copyScanEventWithDeviceId(candidate, selectedDeviceId),
+    );
+    _visibleDevices[selectedDeviceId] = mergedEvent;
+    if (_publishedVisibleDevices.containsKey(selectedDeviceId)) {
+      _publishedVisibleDevices[selectedDeviceId] = mergedEvent;
+    }
+
+    _visibleDevices.remove(candidate.deviceId);
+    _publishedVisibleDevices.remove(candidate.deviceId);
+    _windowsDeviceAliases[candidate.deviceId] = _WindowsBleDeviceAlias(
+      deviceId: selectedDeviceId,
+      seenAt: candidate.seenAt,
+    );
+    _appendLog(
+      timestamp: candidate.seenAt,
+      category: DashboardLogCategory.action,
+      message: 'Windows BLE identity alias',
+      displayName: _normalizedText(mergedEvent.displayName),
+      addressHint: _normalizedText(mergedEvent.addressHint),
+      deviceId: selectedDeviceId,
+      rssi: candidate.rssi,
+      reason: 'selectedWindowsIphoneVisibleAppleCandidate',
+      manufacturerData: candidate.manufacturerData,
+      rawAdvertisement: candidate.rawAdvertisement,
+      sessionState: _sessionState,
+    );
   }
 
   void _rememberWindowsIdentityObservation(
@@ -3098,7 +3203,9 @@ bool _hasWindowsAdvertisement(BleScanEvent event) {
     return true;
   }
   if (_rawString(rawAdvertisement['source']) == 'deviceInformation') {
-    return false;
+    return _rawBool(rawAdvertisement['hasAdvertisement']) &&
+        _rawInt(rawAdvertisement['packetCount']) > 0 &&
+        event.rssi > -127;
   }
   if (rawAdvertisement.containsKey('hasAdvertisement')) {
     return _rawBool(rawAdvertisement['hasAdvertisement']);
