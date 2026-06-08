@@ -15,6 +15,7 @@ Future<void> main() async {
   await testMacosPodspecIncludesBluetoothPrivacyUsageDescription();
   await testMacosPodspecLinksLoginFrameworkForLockScreen();
   await testMacosNativeLockScreenReportsNativeFailures();
+  await testMacosNativeSessionObservesScreenLockNotifications();
   await testMacosNativeUnlockReturnsStillLockedQuickly();
   await testMacosPlatformReportsFirstVersionCapabilities();
   await testMacosScannerStartsAndStopsWithoutNativeBridge();
@@ -157,6 +158,21 @@ Future<void> testMacosNativeLockScreenReportsNativeFailures() async {
   assert(!lockSource.contains('CGSession'));
   assert(
       !source.contains('/System/Library/CoreServices/Menu Extras/User.menu'));
+}
+
+Future<void> testMacosNativeSessionObservesScreenLockNotifications() async {
+  final source = File(
+    'flutter/packages/bleunlock_macos/macos/Classes/BleunlockMacosPlugin.swift',
+  ).readAsStringSync();
+  final sessionSource =
+      _extractClassSource(source, 'BleunlockSessionController');
+
+  assert(sessionSource.contains('DistributedNotificationCenter.default()'));
+  assert(sessionSource.contains('com.apple.screenIsLocked'));
+  assert(sessionSource.contains('com.apple.screenIsUnlocked'));
+  assert(sessionSource.contains('emitLockState(locked: true'));
+  assert(sessionSource.contains('emitLockState(locked: false'));
+  assert(sessionSource.contains('lastEmittedLockState'));
 }
 
 Future<void> testMacosNativeUnlockReturnsStillLockedQuickly() async {

@@ -701,20 +701,23 @@ private struct BleunlockLEDeviceInfo {
 
 final class BleunlockSessionController: NSObject, FlutterStreamHandler {
   private var eventSink: FlutterEventSink?
-  private var observers: [NSObjectProtocol] = []
+  private var workspaceObservers: [NSObjectProtocol] = []
+  private var distributedObservers: [NSObjectProtocol] = []
+  private var lastEmittedLockState: Bool?
 
   func onListen(
     withArguments arguments: Any?,
     eventSink events: @escaping FlutterEventSink
   ) -> FlutterError? {
     eventSink = events
-    subscribeWorkspaceEvents()
+    subscribeSessionEvents()
     emitCurrentLockState(reason: "sessionStreamAttached")
     return nil
   }
 
   func onCancel(withArguments arguments: Any?) -> FlutterError? {
-    removeWorkspaceObservers()
+    removeSessionObservers()
+    lastEmittedLockState = nil
     eventSink = nil
     return nil
   }
@@ -765,47 +768,47 @@ final class BleunlockSessionController: NSObject, FlutterStreamHandler {
     return isLocked()
   }
 
-  private func subscribeWorkspaceEvents() {
-    removeWorkspaceObservers()
+  private func subscribeSessionEvents() {
+    removeSessionObservers()
 
-    let center = NSWorkspace.shared.notificationCenter
-    observers = [
-      center.addObserver(
+    let workspaceCenter = NSWorkspace.shared.notificationCenter
+    workspaceObservers = [
+      workspaceCenter.addObserver(
         forName: NSWorkspace.sessionDidResignActiveNotification,
         object: nil,
         queue: .main
       ) { [weak self] _ in
-        self?.emit(kind: "locked", reason: "NSWorkspace.sessionDidResignActiveNotification")
+        self?.emitLockState(locked: true, reason: "NSWorkspace.sessionDidResignActiveNotification")
       },
-      center.addObserver(
+      workspaceCenter.addObserver(
         forName: NSWorkspace.sessionDidBecomeActiveNotification,
         object: nil,
         queue: .main
       ) { [weak self] _ in
-        self?.emit(kind: "unlocked", reason: "NSWorkspace.sessionDidBecomeActiveNotification")
+        self?.emitLockState(locked: false, reason: "NSWorkspace.sessionDidBecomeActiveNotification")
       },
-      center.addObserver(
+      workspaceCenter.addObserver(
         forName: NSWorkspace.screensDidSleepNotification,
         object: nil,
         queue: .main
       ) { [weak self] _ in
         self?.emit(kind: "displaySleep", reason: "NSWorkspace.screensDidSleepNotification")
       },
-      center.addObserver(
+      workspaceCenter.addObserver(
         forName: NSWorkspace.screensDidWakeNotification,
         object: nil,
         queue: .main
       ) { [weak self] _ in
         self?.emit(kind: "displayWake", reason: "NSWorkspace.screensDidWakeNotification")
       },
-      center.addObserver(
+      workspaceCenter.addObserver(
         forName: NSWorkspace.willSleepNotification,
         object: nil,
         queue: .main
       ) { [weak self] _ in
         self?.emit(kind: "systemSleep", reason: "NSWorkspace.willSleepNotification")
       },
-      center.addObserver(
+      workspaceCenter.addObserver(
         forName: NSWorkspace.didWakeNotification,
         object: nil,
         queue: .main
@@ -813,14 +816,44 @@ final class BleunlockSessionController: NSObject, FlutterStreamHandler {
         self?.emit(kind: "systemWake", reason: "NSWorkspace.didWakeNotification")
       },
     ]
+
+    let distributedCenter = DistributedNotificationCenter.default()
+    distributedObservers = [
+      distributedCenter.addObserver(
+        forName: Notification.Name("com.apple.screenIsLocked"),
+        object: nil,
+        queue: .main
+      ) { [weak self] _ in
+        self?.emitLockState(
+          locked: true,
+          reason: "DistributedNotificationCenter.com.apple.screenIsLocked"
+        )
+      },
+      distributedCenter.addObserver(
+        forName: Notification.Name("com.apple.screenIsUnlocked"),
+        object: nil,
+        queue: .main
+      ) { [weak self] _ in
+        self?.emitLockState(
+          locked: false,
+          reason: "DistributedNotificationCenter.com.apple.screenIsUnlocked"
+        )
+      },
+    ]
   }
 
-  private func removeWorkspaceObservers() {
-    let center = NSWorkspace.shared.notificationCenter
-    for observer in observers {
-      center.removeObserver(observer)
+  private func removeSessionObservers() {
+    let workspaceCenter = NSWorkspace.shared.notificationCenter
+    for observer in workspaceObservers {
+      workspaceCenter.removeObserver(observer)
     }
-    observers.removeAll()
+    workspaceObservers.removeAll()
+
+    let distributedCenter = DistributedNotificationCenter.default()
+    for observer in distributedObservers {
+      distributedCenter.removeObserver(observer)
+    }
+    distributedObservers.removeAll()
   }
 
   private func emit(kind: String, reason: String) {
@@ -833,7 +866,15 @@ final class BleunlockSessionController: NSObject, FlutterStreamHandler {
   }
 
   private func emitCurrentLockState(reason: String) {
-    emit(kind: isLocked() ? "locked" : "unlocked", reason: reason)
+    emitLockState(locked: isLocked(), reason: reason)
+  }
+
+  private func emitLockState(locked: Bool, reason: String) {
+    if lastEmittedLockState == locked {
+      return
+    }
+    lastEmittedLockState = locked
+    emit(kind: locked ? "locked" : "unlocked", reason: reason)
   }
 }
 

@@ -296,6 +296,8 @@ const Map<String, String> _exactLabels = {
   'Lock sync event stream failed': '锁屏同步事件流异常',
   'Lock sync event sent': '锁屏同步事件已发送',
   'Lock sync event rejected': '锁屏同步事件已拒绝',
+  'Session event monitoring enabled': '会话事件监听已启用',
+  'sessionEventSubscriptionStarted': '会话事件监听已启动',
   'Remote lock requested': '收到远程锁屏请求',
   'Startup unavailable': '开机启动不可用',
   'Startup enabled': '开机启动已开启',

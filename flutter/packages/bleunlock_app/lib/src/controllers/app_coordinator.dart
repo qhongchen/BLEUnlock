@@ -1811,6 +1811,12 @@ class AppCoordinator {
         _publish();
       },
     );
+    _appendLog(
+      timestamp: DateTime.now(),
+      category: DashboardLogCategory.action,
+      message: 'Session event monitoring enabled',
+      reason: 'sessionEventSubscriptionStarted',
+    );
   }
 
   void _ensureLockSyncSubscription() {
