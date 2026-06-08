@@ -966,6 +966,9 @@ final class BleunlockTrayController: NSObject, FlutterStreamHandler {
   @objc private func openSettings() {
     NSApp.activate(ignoringOtherApps: true)
     NSApp.windows.forEach { window in
+      if window.isMiniaturized {
+        window.deminiaturize(nil)
+      }
       window.makeKeyAndOrderFront(nil)
     }
     emit(kind: "openSettings")
