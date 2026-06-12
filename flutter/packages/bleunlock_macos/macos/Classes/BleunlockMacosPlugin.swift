@@ -934,7 +934,7 @@ final class BleunlockTrayController: NSObject, FlutterStreamHandler {
       return
     }
 
-    let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     item.button?.toolTip = "BLEUnlock"
     item.menu = buildMenu()
     statusItem = item
@@ -943,26 +943,56 @@ final class BleunlockTrayController: NSObject, FlutterStreamHandler {
 
   private func buildMenu() -> NSMenu {
     let menu = NSMenu()
-    menu.addItem(menuItem(title: "打开设置", action: #selector(openSettings)))
-    menu.addItem(NSMenuItem.separator())
+    menu.addItem(disabledMenuItem(title: "BLEUnlock 控制中心"))
+    menu.addItem(disabledMenuItem(title: "当前状态：\(statusDescription(for: status))"))
+    menu.addItem(disabledMenuItem(title: "监听状态：\(isMonitoring ? "运行中" : "已暂停")"))
     if let recentDeviceSummary {
-      menu.addItem(disabledMenuItem(title: recentDeviceSummary))
-      menu.addItem(NSMenuItem.separator())
+      menu.addItem(disabledMenuItem(title: "最近设备：\(recentDeviceSummary)"))
+    } else {
+      menu.addItem(disabledMenuItem(title: "最近设备：等待扫描"))
     }
+    menu.addItem(NSMenuItem.separator())
+    menu.addItem(
+      menuItem(
+        title: "打开设置...",
+        action: #selector(openSettings),
+        keyEquivalent: ",",
+        modifierMask: [.command]
+      )
+    )
     if isMonitoring {
       menu.addItem(menuItem(title: "暂停监听", action: #selector(pauseMonitoring)))
     } else {
       menu.addItem(menuItem(title: "开始监听", action: #selector(startMonitoring)))
     }
+    menu.addItem(
+      menuItem(
+        title: "立即锁屏",
+        action: #selector(lockNow),
+        keyEquivalent: "l",
+        modifierMask: [.command, .option]
+      )
+    )
     menu.addItem(NSMenuItem.separator())
-    menu.addItem(menuItem(title: "立即锁屏", action: #selector(lockNow)))
-    menu.addItem(NSMenuItem.separator())
-    menu.addItem(menuItem(title: "退出 BLEUnlock", action: #selector(quit)))
+    menu.addItem(
+      menuItem(
+        title: "退出 BLEUnlock",
+        action: #selector(quit),
+        keyEquivalent: "q",
+        modifierMask: [.command]
+      )
+    )
     return menu
   }
 
-  private func menuItem(title: String, action: Selector) -> NSMenuItem {
-    let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+  private func menuItem(
+    title: String,
+    action: Selector,
+    keyEquivalent: String = "",
+    modifierMask: NSEvent.ModifierFlags = []
+  ) -> NSMenuItem {
+    let item = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)
+    item.keyEquivalentModifierMask = modifierMask
     item.target = self
     return item
   }
@@ -974,12 +1004,23 @@ final class BleunlockTrayController: NSObject, FlutterStreamHandler {
   }
 
   private func updateStatusTitle() {
-    statusItem?.button?.title = title(for: status)
-    if let recentDeviceSummary {
-      statusItem?.button?.toolTip = "BLEUnlock\n\(recentDeviceSummary)"
-    } else {
-      statusItem?.button?.toolTip = "BLEUnlock"
+    guard let button = statusItem?.button else {
+      return
     }
+    button.title = ""
+    button.image = statusImage(for: status)
+    button.imagePosition = .imageOnly
+    var toolTipLines = [
+      "BLEUnlock",
+      "当前状态：\(statusDescription(for: status))",
+      "监听状态：\(isMonitoring ? "运行中" : "已暂停")",
+    ]
+    if let recentDeviceSummary {
+      toolTipLines.append("最近设备：\(recentDeviceSummary)")
+    } else {
+      toolTipLines.append("最近设备：等待扫描")
+    }
+    button.toolTip = toolTipLines.joined(separator: "\n")
   }
 
   private func normalizedSummary(_ value: String?) -> String? {
@@ -991,20 +1032,36 @@ final class BleunlockTrayController: NSObject, FlutterStreamHandler {
     return summary
   }
 
-  private func title(for status: String) -> String {
+  private func statusDescription(for status: String) -> String {
     switch status {
     case "monitoring":
-      return "BLEUnlock 监听中"
+      return "监听中"
     case "locked":
-      return "BLEUnlock 已锁定"
+      return "已锁定"
     case "warning":
-      return "BLEUnlock !"
+      return "需要处理"
     default:
-      return "BLEUnlock"
+      return "就绪"
     }
   }
 
+  private func statusImage(for status: String) -> NSImage? {
+    let imageName: String
+    switch status {
+    case "monitoring", "locked":
+      imageName = "StatusBarConnected"
+    default:
+      imageName = "StatusBarDisconnected"
+    }
+    guard let image = NSImage(named: imageName) else {
+      return nil
+    }
+    image.isTemplate = true
+    return image
+  }
+
   @objc private func openSettings() {
+    NSApp.setActivationPolicy(.regular)
     NSApp.activate(ignoringOtherApps: true)
     NSApp.windows.forEach { window in
       if window.isMiniaturized {
@@ -1147,22 +1204,7 @@ final class BleunlockUnlockController {
       ]
     }
 
-    do {
-      guard let password = try secureStore.readSecret(key: unlockPasswordKey),
-            !password.isEmpty
-      else {
-        return [
-          "kind": "missingSecret",
-          "description": "Automatic unlock password is not configured",
-        ]
-      }
-      return ["kind": "supported"]
-    } catch {
-      return [
-        "kind": "failedWithReason",
-        "description": "Keychain read failed",
-      ]
-    }
+    return ["kind": "supported"]
   }
 
   func openPermissionSettings() {

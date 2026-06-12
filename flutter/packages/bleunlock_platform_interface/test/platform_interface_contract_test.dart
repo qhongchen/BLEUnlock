@@ -92,7 +92,7 @@ class FakeBleScanner implements BleScanner {
   Stream<BleScanEvent> get events => _controller.stream;
 
   @override
-  Future<void> startScan({BleScanMode mode = BleScanMode.passive}) async {
+  Future<void> startScan() async {
     _scanning = true;
   }
 

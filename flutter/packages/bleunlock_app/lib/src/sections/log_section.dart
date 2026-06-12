@@ -8,6 +8,16 @@ import 'package:bleunlock_app/src/widgets/status_pill.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+String _timeLabel(DateTime? timestamp) {
+  if (timestamp == null) {
+    return '--';
+  }
+  final hour = timestamp.hour.toString().padLeft(2, '0');
+  final minute = timestamp.minute.toString().padLeft(2, '0');
+  final second = timestamp.second.toString().padLeft(2, '0');
+  return '$hour:$minute:$second';
+}
+
 class LogSection extends StatefulWidget {
   const LogSection({
     required this.logs,
@@ -43,6 +53,7 @@ class _LogSectionState extends State<LogSection> {
     final visibleLogs = filter.apply(widget.logs);
     final sessionDiagnostics = DashboardSessionDiagnostic.fromLogs(visibleLogs);
     final deviceDiagnostics = DashboardDeviceDiagnostic.fromLogs(visibleLogs);
+    final categorySummaries = _buildCategorySummaries(widget.logs);
     final diagnosticLogJsonLines =
         visibleLogs.map(_diagnosticJsonLine).join('\n');
     final sessionDiagnosticJsonLines =
@@ -98,6 +109,8 @@ class _LogSectionState extends State<LogSection> {
               ),
             ],
           ),
+          const SizedBox(height: 12),
+          _CategorySummaryRow(summaries: categorySummaries),
           const SizedBox(height: 12),
           _LogFilters(
             category: _category,
@@ -209,6 +222,23 @@ class _LogSectionState extends State<LogSection> {
       entry.diagnosticJsonLine;
 }
 
+List<_CategorySummary> _buildCategorySummaries(List<DashboardLogEntry> logs) {
+  final groups = <DashboardLogCategory, List<DashboardLogEntry>>{
+    for (final category in DashboardLogCategory.values) category: [],
+  };
+  for (final entry in logs) {
+    groups[entry.category]?.add(entry);
+  }
+  return DashboardLogCategory.values.map((category) {
+    final entries = groups[category] ?? const <DashboardLogEntry>[];
+    return _CategorySummary(
+      category: category,
+      count: entries.length,
+      latestAt: entries.isEmpty ? null : entries.first.timestamp,
+    );
+  }).toList(growable: false);
+}
+
 final Directory _defaultExportDirectory = Directory(
   '${Directory.systemTemp.path}/BLEUnlock/diagnostics',
 );
@@ -226,6 +256,90 @@ Future<File> _writeJsonLines(
   final file = File('${directory.path}/$prefix-$timestamp.jsonl');
   file.writeAsStringSync('$text\n', flush: true);
   return file;
+}
+
+class _CategorySummaryRow extends StatelessWidget {
+  const _CategorySummaryRow({required this.summaries});
+
+  final List<_CategorySummary> summaries;
+
+  @override
+  Widget build(BuildContext context) {
+    return Wrap(
+      spacing: 10,
+      runSpacing: 10,
+      children: [
+        for (final summary in summaries) _CategorySummaryTile(summary: summary),
+      ],
+    );
+  }
+}
+
+class _CategorySummaryTile extends StatelessWidget {
+  const _CategorySummaryTile({required this.summary});
+
+  final _CategorySummary summary;
+
+  @override
+  Widget build(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            StatusPill(
+              label: summary.category.label,
+              icon: _iconForCategory(summary.category),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '${summary.count} 条',
+              style: textTheme.titleMedium,
+            ),
+            const SizedBox(height: 2),
+            Text(
+              summary.latestAt == null
+                  ? '最近事件 --'
+                  : '最近事件 ${_timeLabel(summary.latestAt)}',
+              style: textTheme.bodySmall,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CategorySummary {
+  const _CategorySummary({
+    required this.category,
+    required this.count,
+    required this.latestAt,
+  });
+
+  final DashboardLogCategory category;
+  final int count;
+  final DateTime? latestAt;
+}
+
+IconData _iconForCategory(DashboardLogCategory category) {
+  switch (category) {
+    case DashboardLogCategory.scan:
+      return Icons.bluetooth_searching;
+    case DashboardLogCategory.decision:
+      return Icons.rule_outlined;
+    case DashboardLogCategory.action:
+      return Icons.play_circle_outline;
+    case DashboardLogCategory.error:
+      return Icons.error_outline;
+  }
 }
 
 class _SessionDiagnosticsSummary extends StatelessWidget {

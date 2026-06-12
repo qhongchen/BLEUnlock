@@ -1,7 +1,6 @@
 import 'package:bleunlock_app/src/localization/zh_labels.dart';
 import 'package:bleunlock_app/src/view_models/dashboard_state.dart';
 import 'package:bleunlock_app/src/widgets/empty_state.dart';
-import 'package:bleunlock_app/src/widgets/primary_action_row.dart';
 import 'package:bleunlock_app/src/widgets/section_card.dart';
 import 'package:flutter/material.dart';
 
@@ -12,7 +11,6 @@ class DeviceSection extends StatefulWidget {
     required this.onStartScanning,
     required this.onStartMonitoring,
     required this.onPauseScanning,
-    required this.onRefreshDevices,
     required this.onDeviceSelectionChanged,
     super.key,
   });
@@ -22,7 +20,6 @@ class DeviceSection extends StatefulWidget {
   final VoidCallback onStartScanning;
   final VoidCallback onStartMonitoring;
   final VoidCallback onPauseScanning;
-  final VoidCallback onRefreshDevices;
   final void Function(String deviceId, bool isSelected)
       onDeviceSelectionChanged;
 
@@ -54,7 +51,6 @@ class _DeviceSectionState extends State<DeviceSection> {
   @override
   Widget build(BuildContext context) {
     final devices = widget.devices;
-    final hasSelectedDevice = devices.any((device) => device.isSelected);
     final filteredDevices = _filteredDevices(devices, _searchQuery);
     return SectionCard(
       title: '设备',
@@ -91,19 +87,6 @@ class _DeviceSectionState extends State<DeviceSection> {
                   ),
               ],
             ),
-          const SizedBox(height: 12),
-          PrimaryActionRow(
-            isMonitoring: widget.isMonitoring,
-            onStartScanning: widget.onStartScanning,
-            onStartMonitoring: widget.onStartMonitoring,
-            onPauseScanning: widget.onPauseScanning,
-            onRefreshDevices: widget.onRefreshDevices,
-            canStartMonitoring: hasSelectedDevice,
-            monitoringHint:
-                !widget.isMonitoring && devices.isNotEmpty && !hasSelectedDevice
-                    ? '请先选择一个或多个设备，再开始监听。'
-                    : null,
-          ),
         ],
       ),
     );

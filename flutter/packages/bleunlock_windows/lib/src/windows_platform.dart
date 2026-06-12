@@ -30,7 +30,7 @@ abstract interface class WindowsBleScanBridge {
 
   Future<Object?> refreshCapability();
 
-  Future<void> startScan({BleScanMode mode = BleScanMode.passive});
+  Future<void> startScan();
 
   Future<void> stopScan();
 }
@@ -51,7 +51,7 @@ class InMemoryWindowsBleScanBridge implements WindowsBleScanBridge {
   }
 
   @override
-  Future<void> startScan({BleScanMode mode = BleScanMode.passive}) async {
+  Future<void> startScan() async {
     _isScanning = true;
   }
 
@@ -88,11 +88,11 @@ class WindowsBleScanner implements BleScanner {
   Stream<BleScanEvent> get events => _events.stream;
 
   @override
-  Future<void> startScan({BleScanMode mode = BleScanMode.passive}) async {
+  Future<void> startScan() async {
     _nativeEventsSubscription ??= _scanBridge.events
         .map(_mapNativeEvent)
         .listen(_events.add, onError: _events.addError);
-    await _scanBridge.startScan(mode: mode);
+    await _scanBridge.startScan();
     _isScanning = true;
   }
 

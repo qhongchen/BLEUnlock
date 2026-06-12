@@ -23,11 +23,8 @@ class ChannelWindowsBleScanBridge implements WindowsBleScanBridge {
   }
 
   @override
-  Future<void> startScan({BleScanMode mode = BleScanMode.passive}) async {
-    await _methodChannel.invokeMethod<void>(
-      'startScan',
-      {'mode': mode.name},
-    );
+  Future<void> startScan() async {
+    await _methodChannel.invokeMethod<void>('startScan');
   }
 
   @override

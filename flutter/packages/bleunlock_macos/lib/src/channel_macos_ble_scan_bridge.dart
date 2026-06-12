@@ -23,7 +23,7 @@ class ChannelMacosBleScanBridge implements MacosBleScanBridge {
   }
 
   @override
-  Future<void> startScan({BleScanMode mode = BleScanMode.passive}) async {
+  Future<void> startScan() async {
     await _methodChannel.invokeMethod<void>('startScan');
   }
 

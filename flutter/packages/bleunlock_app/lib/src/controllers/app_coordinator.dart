@@ -16,14 +16,6 @@ class AppCoordinator {
       'macosAutomaticUnlockPassword';
   static const Duration _scanLogSampleInterval = Duration(seconds: 5);
   static const int _scanLogRssiChangeThreshold = 5;
-  static const Duration _windowsBleIdentityAliasWindow = Duration(minutes: 5);
-  static const int _windowsBleIdentityRssiTolerance = 18;
-  static const Duration _windowsAppleIdentityCandidateWindow =
-      Duration(seconds: 20);
-  static const int _windowsAppleCandidateScoreGap = 6;
-  static const int _windowsAppleCandidateRssiGap = 12;
-  static const int _windowsAppleStrongCandidateRssi = -60;
-  static const Duration _windowsEnhancedDiscoveryWindow = Duration(seconds: 8);
   static const Duration _localLockSessionSyncSuppressionWindow =
       Duration(seconds: 5);
 
@@ -47,7 +39,7 @@ class AppCoordinator {
         _config = config,
         _selectedDeviceIds = {...selectedDeviceIds},
         _settingsRepository = settingsRepository ??
-            SecureStoreAppSettingsRepository(platform.secureStore),
+            FileAppSettingsRepository(secureStore: platform.secureStore),
         _lockSyncController = lockSyncController ?? LockSyncController(),
         _capabilityMonitor = CapabilityMonitor(
           platform,
@@ -76,8 +68,6 @@ class AppCoordinator {
   final Set<String> _selectedDeviceIds;
   final Map<String, BleScanEvent> _visibleDevices = {};
   final Map<String, BleScanEvent> _publishedVisibleDevices = {};
-  final Map<String, _WindowsBleDeviceAlias> _windowsDeviceAliases = {};
-  final Map<String, WindowsBleIdentityProfile> _windowsIdentityProfiles = {};
   final Map<_ActionKind, DateTime> _lastActionAt = {};
   final Map<String, String> _lastLoggedPresenceSignatures = {};
   final Map<String, _LoggedScanSample> _lastLoggedScanSamples = {};
@@ -85,7 +75,16 @@ class AppCoordinator {
       StreamController<DashboardState>.broadcast();
   final StreamController<AppCommand> _commands =
       StreamController<AppCommand>.broadcast();
-  final List<DashboardLogEntry> _logs = [];
+  static const Map<DashboardLogCategory, int> _logCapacityByCategory = {
+    DashboardLogCategory.scan: 120,
+    DashboardLogCategory.decision: 80,
+    DashboardLogCategory.action: 80,
+    DashboardLogCategory.error: 80,
+  };
+
+  final Map<DashboardLogCategory, List<DashboardLogEntry>> _logsByCategory = {
+    for (final category in DashboardLogCategory.values) category: [],
+  };
 
   StreamSubscription<BleScanEvent>? _scanSubscription;
   StreamSubscription<TrayAction>? _traySubscription;
@@ -95,7 +94,6 @@ class AppCoordinator {
   Timer? _wakeUnlockTimer;
   Timer? _tickTimer;
   Timer? _deviceListRefreshTimer;
-  Timer? _windowsEnhancedDiscoveryTimer;
   DashboardState _value;
   PresenceDecision? _lastDecision;
   PresenceDecision? _visibleDeviceListDecision;
@@ -114,7 +112,6 @@ class AppCoordinator {
   String _autoUnlockBlockedReason = 'externalLock';
   bool _hasLoggedAutoUnlockSuppression = false;
   bool _hasWokenForCurrentCloseCycle = false;
-  bool _isWindowsEnhancedDiscoverySwitching = false;
   DateTime? _suppressExternalLockSyncUntil;
   LockSyncSnapshot _lockSyncSnapshot = const LockSyncSnapshot.initial();
 
@@ -127,7 +124,7 @@ class AppCoordinator {
   ProximityConfig get config => _config;
 
   String get diagnosticLogJsonLines {
-    return _logs.map((entry) => entry.diagnosticJsonLine).join('\n');
+    return _combinedLogs.map((entry) => entry.diagnosticJsonLine).join('\n');
   }
 
   Future<void> initialize() async {
@@ -142,13 +139,10 @@ class AppCoordinator {
       return;
     }
 
-    _config = settings.config;
+    _config = _normalizeProximityConfig(settings.config);
     _selectedDeviceIds
       ..clear()
       ..addAll(settings.selectedDeviceIds);
-    _windowsIdentityProfiles
-      ..clear()
-      ..addAll(settings.windowsIdentityProfiles);
     _lockSyncSnapshot = LockSyncSnapshot(config: settings.lockSyncConfig);
     _ensureLockSyncSubscription();
     if (settings.lockSyncConfig.role == LockSyncRole.server) {
@@ -233,9 +227,6 @@ class AppCoordinator {
       return;
     }
     _isScanning = true;
-    if (_isWindowsPlatform && !_isMonitoring) {
-      unawaited(_startWindowsEnhancedDiscovery());
-    }
     _publish();
   }
 
@@ -301,6 +292,8 @@ class AppCoordinator {
       return;
     }
 
+    await _refreshAutoUnlockSecretStatusIfEnabled();
+
     _ensureSessionSubscription();
     _isMonitoring = true;
     _startTickTimer();
@@ -339,7 +332,6 @@ class AppCoordinator {
       );
     }
     _isScanning = false;
-    _cancelWindowsEnhancedDiscoveryTimer();
     _lastActionLabel = 'Monitoring paused';
     _appendLog(
       timestamp: DateTime.now(),
@@ -354,14 +346,8 @@ class AppCoordinator {
     final wasMonitoring = _isMonitoring;
     if (isSelected) {
       _selectedDeviceIds.add(deviceId);
-      _rememberWindowsIdentitySelection(deviceId);
-      _associateSelectedWindowsIphoneWithVisibleAppleCandidate(deviceId);
     } else {
       _selectedDeviceIds.remove(deviceId);
-      _windowsDeviceAliases.removeWhere((_, canonicalId) {
-        return canonicalId.deviceId == deviceId;
-      });
-      _windowsIdentityProfiles.remove(deviceId);
     }
 
     final shouldPauseForEmptySelection =
@@ -387,8 +373,6 @@ class AppCoordinator {
     final shouldPauseForEmptySelection = _isMonitoring;
     _config = const ProximityConfig();
     _selectedDeviceIds.clear();
-    _windowsDeviceAliases.clear();
-    _windowsIdentityProfiles.clear();
     _lastLoggedScanSamples.clear();
     _cancelUnlockRetry(reason: 'rulesAndDevicesReset');
     _cancelWakeUnlockTimer();
@@ -410,9 +394,6 @@ class AppCoordinator {
 
   void refreshDeviceList() {
     _cancelDeviceListRefreshTimer();
-    if (_isWindowsPlatform && _isScanning) {
-      unawaited(_startWindowsEnhancedDiscovery());
-    }
     _publishDeviceList(_latestScanAt ?? DateTime.now());
   }
 
@@ -420,8 +401,9 @@ class AppCoordinator {
     ProximityConfig config, {
     bool acknowledgeMacAutoUnlockRisk = false,
   }) {
+    final nextConfig = _normalizeProximityConfig(config);
     final isEnablingMacAutoUnlock =
-        !_config.enableMacAutoUnlock && config.enableMacAutoUnlock;
+        !_config.enableMacAutoUnlock && nextConfig.enableMacAutoUnlock;
     if (isEnablingMacAutoUnlock && !_isAutoUnlockSecretEditable) {
       _lastActionLabel = 'Auto unlock unavailable';
       _appendLog(
@@ -449,8 +431,9 @@ class AppCoordinator {
       return;
     }
 
-    _config = config;
-    if (!config.enableMacAutoUnlock) {
+    _config = nextConfig;
+    if (!nextConfig.enableMacAutoUnlock) {
+      _isAutoUnlockSecretConfigured = false;
       _cancelUnlockRetry(reason: 'autoUnlockDisabledForRetry');
       _cancelWakeUnlockTimer();
     }
@@ -567,7 +550,11 @@ class AppCoordinator {
         );
       }
     }
-    await _refreshAutoUnlockSecretStatus();
+    if (reason != CapabilityRefreshReason.appStart) {
+      await _refreshAutoUnlockSecretStatusIfEnabled();
+    } else if (!_config.enableMacAutoUnlock) {
+      _isAutoUnlockSecretConfigured = false;
+    }
     return success;
   }
 
@@ -800,7 +787,6 @@ class AppCoordinator {
     _cancelWakeUnlockTimer();
     _stopTickTimer();
     _cancelDeviceListRefreshTimer();
-    _cancelWindowsEnhancedDiscoveryTimer();
     _isMonitoring = false;
     _isScanning = false;
     final scanSubscription = _scanSubscription;
@@ -839,7 +825,6 @@ class AppCoordinator {
   }
 
   void _handleScan(BleScanEvent event) {
-    event = _resolveWindowsBleIdentity(event);
     if (_latestScanAt == null || event.seenAt.isAfter(_latestScanAt!)) {
       _latestScanAt = event.seenAt;
     }
@@ -847,7 +832,6 @@ class AppCoordinator {
     final isNewDevice = !_visibleDevices.containsKey(event.deviceId);
     final mergedEvent = _mergeScanEvent(_visibleDevices[event.deviceId], event);
     _visibleDevices[event.deviceId] = mergedEvent;
-    _rememberWindowsIdentityObservation(mergedEvent);
     if (!_isMonitoring) {
       _appendScanLogIfUseful(mergedEvent);
       if (isNewDevice) {
@@ -908,536 +892,6 @@ class AppCoordinator {
     );
   }
 
-  BleScanEvent _resolveWindowsBleIdentity(BleScanEvent event) {
-    if (!_isWindowsPlatform || _selectedDeviceIds.isEmpty) {
-      return event;
-    }
-    _pruneWindowsBleIdentityAliases(event.seenAt);
-    if (_selectedDeviceIds.contains(event.deviceId)) {
-      return event;
-    }
-
-    final knownAlias = _windowsDeviceAliases[event.deviceId];
-    if (knownAlias != null) {
-      if (_selectedDeviceIds.contains(knownAlias.deviceId)) {
-        _windowsDeviceAliases[event.deviceId] = knownAlias.seen(event.seenAt);
-        return _copyScanEventWithDeviceId(event, knownAlias.deviceId);
-      }
-      _windowsDeviceAliases.remove(event.deviceId);
-    }
-
-    final alias = _findWindowsBleIdentityAlias(event) ??
-        _findWindowsAppleManufacturerCandidateAlias(event);
-    if (alias == null) {
-      return event;
-    }
-
-    _windowsDeviceAliases[event.deviceId] =
-        _WindowsBleDeviceAlias(deviceId: alias.deviceId, seenAt: event.seenAt);
-    _appendLog(
-      timestamp: event.seenAt,
-      category: DashboardLogCategory.action,
-      message: 'Windows BLE identity alias',
-      displayName: _normalizedText(event.displayName),
-      addressHint: _normalizedText(event.addressHint),
-      deviceId: alias.deviceId,
-      rssi: _hasWindowsAdvertisement(event) ? event.rssi : null,
-      reason: alias.reason,
-      manufacturerData: event.manufacturerData,
-      rawAdvertisement: event.rawAdvertisement,
-      sessionState: _sessionState,
-    );
-    return _copyScanEventWithDeviceId(event, alias.deviceId);
-  }
-
-  void _pruneWindowsBleIdentityAliases(DateTime timestamp) {
-    _windowsDeviceAliases.removeWhere((_, alias) {
-      final age = timestamp.difference(alias.seenAt);
-      return !_selectedDeviceIds.contains(alias.deviceId) ||
-          age.isNegative ||
-          age > _windowsBleIdentityAliasWindow;
-    });
-  }
-
-  _WindowsBleIdentityAliasResolution? _findWindowsBleIdentityAlias(
-    BleScanEvent event,
-  ) {
-    String? bestDeviceId;
-    var bestScore = 0;
-    var isAmbiguous = false;
-
-    for (final selectedDeviceId in _selectedDeviceIds) {
-      final previous = _visibleDevices[selectedDeviceId];
-      final profile = _windowsIdentityProfiles[selectedDeviceId];
-      if (previous == null && profile == null) {
-        continue;
-      }
-
-      final score = previous == null
-          ? _windowsBleIdentityProfileMatchScore(profile!, event)
-          : _windowsBleIdentityMatchScore(previous, event) +
-              _windowsBleIdentityProfileMatchScore(
-                profile,
-                event,
-              );
-      if (score <= 0) {
-        continue;
-      }
-      if (score > bestScore) {
-        bestDeviceId = selectedDeviceId;
-        bestScore = score;
-        isAmbiguous = false;
-      } else if (score == bestScore) {
-        isAmbiguous = true;
-      }
-    }
-
-    if (isAmbiguous || bestDeviceId == null) {
-      return null;
-    }
-    return _WindowsBleIdentityAliasResolution(
-      deviceId: bestDeviceId,
-      reason: 'windowsBleIdentityAlias',
-    );
-  }
-
-  _WindowsBleIdentityAliasResolution?
-      _findWindowsAppleManufacturerCandidateAlias(BleScanEvent event) {
-    if (!_hasWindowsAdvertisement(event) ||
-        !_isWindowsAppleManufacturerCandidate(event)) {
-      return null;
-    }
-
-    final selectedIphoneDeviceIds =
-        _selectedWindowsIphoneSystemDiscoveryDeviceIds();
-    if (selectedIphoneDeviceIds.length != 1) {
-      return null;
-    }
-
-    final selectedDeviceId = selectedIphoneDeviceIds.single;
-    final candidatesById = <String, BleScanEvent>{
-      for (final entry in _visibleDevices.entries) entry.key: entry.value,
-      event.deviceId: event,
-    };
-    final candidates = candidatesById.values.where((candidate) {
-      if (_selectedDeviceIds.contains(candidate.deviceId)) {
-        return false;
-      }
-      final age = event.seenAt.difference(candidate.seenAt);
-      return !age.isNegative &&
-          age <= _windowsAppleIdentityCandidateWindow &&
-          _hasWindowsAdvertisement(candidate) &&
-          _isWindowsAppleManufacturerCandidate(candidate) &&
-          candidate.rssi >= config.minimumVisibleRssi;
-    }).toList()
-      ..sort(_compareWindowsAppleManufacturerCandidates);
-
-    final strictCandidates =
-        candidates.where(_hasWindowsAppleNearbyManufacturerPayload).toList();
-    final scopedCandidates =
-        strictCandidates.isNotEmpty ? strictCandidates : candidates;
-    if (scopedCandidates.isEmpty ||
-        scopedCandidates.first.deviceId != event.deviceId) {
-      return null;
-    }
-    if (_hasAmbiguousWindowsAppleCandidate(scopedCandidates)) {
-      return null;
-    }
-
-    return _WindowsBleIdentityAliasResolution(
-      deviceId: selectedDeviceId,
-      reason: strictCandidates.isNotEmpty
-          ? 'uniqueWindowsAppleNearbyManufacturerCandidate'
-          : scopedCandidates.length == 1
-              ? 'uniqueWindowsAppleManufacturerCandidate'
-              : 'dominantWindowsAppleManufacturerCandidate',
-    );
-  }
-
-  Set<String> _selectedWindowsIphoneSystemDiscoveryDeviceIds() {
-    final result = <String>{};
-    for (final deviceId in _selectedDeviceIds) {
-      if (_isWindowsIphoneSystemDiscoverySelection(deviceId)) {
-        result.add(deviceId);
-      }
-    }
-    return result;
-  }
-
-  bool _isWindowsIphoneSystemDiscoverySelection(String deviceId) {
-    final event =
-        _visibleDevices[deviceId] ?? _publishedVisibleDevices[deviceId];
-    final profile = _windowsIdentityProfiles[deviceId];
-    final displayName = _normalizedText(event?.displayName) ??
-        _normalizedText(
-          event?.rawAdvertisement?['deviceInformationName']?.toString(),
-        ) ??
-        _normalizedText(profile?.displayName);
-    if (!_isIphoneDisplayName(displayName)) {
-      return false;
-    }
-    if (event == null) {
-      return true;
-    }
-    if (!_hasWindowsAdvertisement(event) ||
-        _rawString(event.rawAdvertisement?['source']) == 'deviceInformation') {
-      return true;
-    }
-    return _hasWindowsSystemDiscoveryEvidence(event, profile);
-  }
-
-  int _compareWindowsAppleManufacturerCandidates(
-    BleScanEvent left,
-    BleScanEvent right,
-  ) {
-    final scoreCompare = _windowsAppleCandidateScore(right)
-        .compareTo(_windowsAppleCandidateScore(left));
-    if (scoreCompare != 0) {
-      return scoreCompare;
-    }
-    final rssiCompare = right.rssi.compareTo(left.rssi);
-    if (rssiCompare != 0) {
-      return rssiCompare;
-    }
-    return right.seenAt.compareTo(left.seenAt);
-  }
-
-  bool _hasAmbiguousWindowsAppleCandidate(List<BleScanEvent> candidates) {
-    if (candidates.length <= 1) {
-      return false;
-    }
-    final topScore = _windowsAppleCandidateScore(candidates[0]);
-    final secondScore = _windowsAppleCandidateScore(candidates[1]);
-    if (topScore - secondScore >= _windowsAppleCandidateScoreGap) {
-      return false;
-    }
-    return candidates[0].rssi < _windowsAppleStrongCandidateRssi ||
-        candidates[0].rssi - candidates[1].rssi < _windowsAppleCandidateRssiGap;
-  }
-
-  int _windowsAppleCandidateScore(BleScanEvent event) {
-    var score = 0;
-    if (_hasWindowsAppleNearbyManufacturerPayload(event)) {
-      score += 10;
-    }
-    if (_rawBool(event.rawAdvertisement?['isConnectable'])) {
-      score += 2;
-    }
-    if (_rawBool(event.rawAdvertisement?['isScannable'])) {
-      score += 2;
-    }
-    final packetCount = _rawInt(event.rawAdvertisement?['packetCount']);
-    if (packetCount >= 50) {
-      score += 3;
-    } else if (packetCount >= 10) {
-      score += 2;
-    } else if (packetCount >= 3) {
-      score += 1;
-    }
-    if (event.rssi >= config.unlockRssi) {
-      score += 4;
-    } else if (event.rssi >= config.lockRssi) {
-      score += 2;
-    } else if (event.rssi >= config.minimumVisibleRssi) {
-      score += 1;
-    }
-    return score;
-  }
-
-  bool _hasWindowsSystemDiscoveryEvidence(
-    BleScanEvent event,
-    WindowsBleIdentityProfile? profile,
-  ) {
-    return _normalizedText(
-              event.rawAdvertisement?['deviceInformationId']?.toString(),
-            ) !=
-            null ||
-        _normalizedText(
-              event.rawAdvertisement?['deviceInformationName']?.toString(),
-            ) !=
-            null ||
-        profile?.deviceInformationIds.isNotEmpty == true;
-  }
-
-  BleScanEvent? _findVisibleWindowsAppleManufacturerCandidate(
-    DateTime timestamp,
-  ) {
-    final candidates = _visibleDevices.values.where((candidate) {
-      if (_selectedDeviceIds.contains(candidate.deviceId)) {
-        return false;
-      }
-      final age = timestamp.difference(candidate.seenAt);
-      return !age.isNegative &&
-          age <= _windowsAppleIdentityCandidateWindow &&
-          _hasWindowsAdvertisement(candidate) &&
-          _isWindowsAppleManufacturerCandidate(candidate) &&
-          candidate.rssi >= config.minimumVisibleRssi;
-    }).toList()
-      ..sort(_compareWindowsAppleManufacturerCandidates);
-
-    final strictCandidates =
-        candidates.where(_hasWindowsAppleNearbyManufacturerPayload).toList();
-    final scopedCandidates =
-        strictCandidates.isNotEmpty ? strictCandidates : candidates;
-    if (scopedCandidates.isEmpty) {
-      return null;
-    }
-    if (_hasAmbiguousWindowsAppleCandidate(scopedCandidates)) {
-      return null;
-    }
-    return scopedCandidates.first;
-  }
-
-  int _windowsBleIdentityMatchScore(
-    BleScanEvent previous,
-    BleScanEvent next,
-  ) {
-    final age = next.seenAt.difference(previous.seenAt);
-    if (age.isNegative || age > _windowsBleIdentityAliasWindow) {
-      return 0;
-    }
-
-    final previousName = _stableBleName(previous);
-    final nextName = _stableBleName(next);
-    final hasNameMatch = previousName != null && previousName == nextName;
-    final hasServiceMatch = _hasIntersection(
-      _serviceUuidSet(previous),
-      _serviceUuidSet(next),
-    );
-    final hasManufacturerFingerprintMatch = _hasIntersection(
-      _identityManufacturerFingerprintSet(previous),
-      _identityManufacturerFingerprintSet(next),
-    );
-    final hasCompanyMatch = _hasIntersection(
-      _identityManufacturerCompanyIdSet(previous),
-      _identityManufacturerCompanyIdSet(next),
-    );
-    final rssiIsClose =
-        (previous.rssi - next.rssi).abs() <= _windowsBleIdentityRssiTolerance;
-
-    if (!hasNameMatch && !hasServiceMatch && !hasManufacturerFingerprintMatch) {
-      return 0;
-    }
-
-    var score = 0;
-    if (hasNameMatch) {
-      score += 6;
-    }
-    if (hasServiceMatch) {
-      score += 5;
-    }
-    if (hasManufacturerFingerprintMatch) {
-      score += 4;
-    }
-    if (hasCompanyMatch) {
-      score += 1;
-    }
-    if (rssiIsClose) {
-      score += 2;
-    }
-    final previousAdvertisementType =
-        _rawString(previous.rawAdvertisement?['advertisementType']);
-    final nextAdvertisementType =
-        _rawString(next.rawAdvertisement?['advertisementType']);
-    if (previousAdvertisementType != null &&
-        previousAdvertisementType == nextAdvertisementType) {
-      score += 1;
-    }
-    return score;
-  }
-
-  int _windowsBleIdentityProfileMatchScore(
-    WindowsBleIdentityProfile? profile,
-    BleScanEvent event,
-  ) {
-    if (profile == null) {
-      return 0;
-    }
-
-    final broadcastAddress = _windowsBroadcastAddress(event);
-    final profileBroadcastAddresses = profile.broadcastAddresses
-        .map(_normalizedWindowsAddress)
-        .whereType<String>()
-        .toSet();
-    if (broadcastAddress != null &&
-        profileBroadcastAddresses.contains(broadcastAddress)) {
-      return 12;
-    }
-
-    final eventName = _stableBleName(event);
-    final profileName = _normalizedStableText(profile.displayName);
-    final hasNameMatch = eventName != null && eventName == profileName;
-    final hasDeviceInformationIdMatch = _hasIntersection(
-      profile.deviceInformationIds
-          .map((value) => value.trim().toLowerCase())
-          .where((value) => value.isNotEmpty)
-          .toSet(),
-      _windowsDeviceInformationIdSet(event),
-    );
-    final hasServiceMatch = _hasIntersection(
-      profile.serviceUuids,
-      _serviceUuidSet(event),
-    );
-    final hasManufacturerFingerprintMatch = _hasIntersection(
-      _identityProfileManufacturerFingerprints(profile),
-      _identityManufacturerFingerprintSet(event),
-    );
-    final hasCompanyMatch = _hasIntersection(
-      _identityProfileManufacturerCompanyIds(profile),
-      _identityManufacturerCompanyIdSet(event),
-    );
-
-    if (!hasNameMatch &&
-        !hasDeviceInformationIdMatch &&
-        !hasServiceMatch &&
-        !hasManufacturerFingerprintMatch) {
-      return 0;
-    }
-
-    var score = 0;
-    if (hasNameMatch) {
-      score += 6;
-    }
-    if (hasDeviceInformationIdMatch) {
-      score += 8;
-    }
-    if (hasServiceMatch) {
-      score += 5;
-    }
-    if (hasManufacturerFingerprintMatch) {
-      score += 5;
-    }
-    if (hasCompanyMatch) {
-      score += 1;
-    }
-    return score;
-  }
-
-  void _rememberWindowsIdentitySelection(String deviceId) {
-    if (!_isWindowsPlatform) {
-      return;
-    }
-    final event =
-        _visibleDevices[deviceId] ?? _publishedVisibleDevices[deviceId];
-    if (event == null) {
-      _windowsIdentityProfiles.putIfAbsent(
-        deviceId,
-        () => WindowsBleIdentityProfile(deviceId: deviceId),
-      );
-      return;
-    }
-    _rememberWindowsIdentityObservation(event, forceSelected: true);
-  }
-
-  void _associateSelectedWindowsIphoneWithVisibleAppleCandidate(
-    String selectedDeviceId,
-  ) {
-    if (!_isWindowsPlatform ||
-        !_isWindowsIphoneSystemDiscoverySelection(selectedDeviceId)) {
-      return;
-    }
-
-    final candidate = _findVisibleWindowsAppleManufacturerCandidate(
-      DateTime.now(),
-    );
-    if (candidate == null) {
-      return;
-    }
-
-    final selectedEvent = _visibleDevices[selectedDeviceId] ??
-        _publishedVisibleDevices[selectedDeviceId];
-    final mergedEvent = _mergeScanEvent(
-      selectedEvent,
-      _copyScanEventWithDeviceId(candidate, selectedDeviceId),
-    );
-    _visibleDevices[selectedDeviceId] = mergedEvent;
-    if (_publishedVisibleDevices.containsKey(selectedDeviceId)) {
-      _publishedVisibleDevices[selectedDeviceId] = mergedEvent;
-    }
-
-    _visibleDevices.remove(candidate.deviceId);
-    _publishedVisibleDevices.remove(candidate.deviceId);
-    _windowsDeviceAliases[candidate.deviceId] = _WindowsBleDeviceAlias(
-      deviceId: selectedDeviceId,
-      seenAt: candidate.seenAt,
-    );
-    _appendLog(
-      timestamp: candidate.seenAt,
-      category: DashboardLogCategory.action,
-      message: 'Windows BLE identity alias',
-      displayName: _normalizedText(mergedEvent.displayName),
-      addressHint: _normalizedText(mergedEvent.addressHint),
-      deviceId: selectedDeviceId,
-      rssi: candidate.rssi,
-      reason: 'selectedWindowsIphoneVisibleAppleCandidate',
-      manufacturerData: candidate.manufacturerData,
-      rawAdvertisement: candidate.rawAdvertisement,
-      sessionState: _sessionState,
-    );
-  }
-
-  void _rememberWindowsIdentityObservation(
-    BleScanEvent event, {
-    bool forceSelected = false,
-  }) {
-    if (!_isWindowsPlatform ||
-        (!forceSelected && !_selectedDeviceIds.contains(event.deviceId))) {
-      return;
-    }
-
-    final broadcastAddress = _windowsBroadcastAddress(event);
-    final deviceAddress = _normalizedWindowsAddress(event.deviceId);
-    final displayName =
-        _normalizedText(event.displayName) ?? _stableProfileDisplayName(event);
-    final addressHint = _normalizedText(event.addressHint);
-    final previous = _windowsIdentityProfiles[event.deviceId] ??
-        WindowsBleIdentityProfile(deviceId: event.deviceId);
-    final next = previous.merge(
-      displayName: displayName,
-      addressHint: addressHint,
-      broadcastAddresses: {
-        if (deviceAddress != null) deviceAddress,
-        if (broadcastAddress != null) broadcastAddress,
-      },
-      deviceInformationIds: _windowsDeviceInformationIdSet(event),
-      serviceUuids: _serviceUuidSet(event),
-      manufacturerCompanyIds: _identityManufacturerCompanyIdSet(event),
-      manufacturerFingerprints: _identityManufacturerFingerprintSet(event),
-      lastSeenAt: event.seenAt,
-    );
-    _windowsIdentityProfiles[event.deviceId] = next;
-    if (_windowsIdentityProfileChanged(previous, next)) {
-      _saveSettings();
-    }
-  }
-
-  String? _stableProfileDisplayName(BleScanEvent event) {
-    final stableName = _stableBleName(event);
-    if (stableName == null) {
-      return null;
-    }
-    return _normalizedText(event.displayName) ??
-        _normalizedText(event.rawAdvertisement?['localName']?.toString()) ??
-        _normalizedText(
-          event.rawAdvertisement?['deviceInformationName']?.toString(),
-        );
-  }
-
-  BleScanEvent _copyScanEventWithDeviceId(
-    BleScanEvent event,
-    String deviceId,
-  ) {
-    return BleScanEvent(
-      deviceId: deviceId,
-      displayName: event.displayName,
-      addressHint: event.addressHint,
-      rssi: event.rssi,
-      seenAt: event.seenAt,
-      manufacturerData: event.manufacturerData,
-      rawAdvertisement: event.rawAdvertisement,
-    );
-  }
-
   String? _preferredAddressHint(
       String? previous, String? next, String deviceId) {
     final normalizedNext = _normalizedText(next);
@@ -1465,12 +919,6 @@ class AppCoordinator {
         'hasAdvertisement': true,
       if (_rawInt(previous['packetCount']) > _rawInt(next['packetCount']))
         'packetCount': previous['packetCount'],
-      if (_rawString(next['source']) == 'deviceInformation' &&
-          _rawBool(previous['hasAdvertisement']) == true)
-        'source': previous['source'],
-      if (_rawString(next['source']) == 'deviceInformation' &&
-          _rawBool(previous['hasAdvertisement']) == true)
-        'rssi': previous['rssi'],
     };
   }
 
@@ -1513,93 +961,6 @@ class AppCoordinator {
   void _cancelDeviceListRefreshTimer() {
     _deviceListRefreshTimer?.cancel();
     _deviceListRefreshTimer = null;
-  }
-
-  Future<void> _startWindowsEnhancedDiscovery() async {
-    if (!_isWindowsPlatform ||
-        !_isScanning ||
-        _isDisposed ||
-        _isWindowsEnhancedDiscoverySwitching) {
-      return;
-    }
-
-    _cancelWindowsEnhancedDiscoveryTimer();
-    _isWindowsEnhancedDiscoverySwitching = true;
-    try {
-      await platform.scanner.startScan(mode: BleScanMode.active);
-    } catch (error) {
-      _appendPlatformFailureLog(
-        timestamp: DateTime.now(),
-        label: 'Windows enhanced discovery failed',
-        reason: 'windowsEnhancedDiscoveryFailed',
-        error: error,
-      );
-      _publish(_lastDecision);
-      return;
-    } finally {
-      _isWindowsEnhancedDiscoverySwitching = false;
-    }
-
-    if (_isDisposed || !_isScanning) {
-      return;
-    }
-
-    _appendLog(
-      timestamp: DateTime.now(),
-      category: DashboardLogCategory.action,
-      message: 'Windows enhanced discovery started',
-      reason: 'windowsEnhancedDiscoveryStarted',
-    );
-    _windowsEnhancedDiscoveryTimer = Timer(_windowsEnhancedDiscoveryWindow, () {
-      _windowsEnhancedDiscoveryTimer = null;
-      if (_isDisposed || !_isScanning) {
-        return;
-      }
-      unawaited(_restoreWindowsPassiveDiscovery());
-    });
-    _publish(_lastDecision);
-  }
-
-  Future<void> _restoreWindowsPassiveDiscovery() async {
-    if (!_isWindowsPlatform ||
-        !_isScanning ||
-        _isDisposed ||
-        _isWindowsEnhancedDiscoverySwitching) {
-      return;
-    }
-
-    _isWindowsEnhancedDiscoverySwitching = true;
-    try {
-      await platform.scanner.startScan(mode: BleScanMode.passive);
-    } catch (error) {
-      _appendPlatformFailureLog(
-        timestamp: DateTime.now(),
-        label: 'Windows passive discovery restore failed',
-        reason: 'windowsPassiveDiscoveryRestoreFailed',
-        error: error,
-      );
-      _publish(_lastDecision);
-      return;
-    } finally {
-      _isWindowsEnhancedDiscoverySwitching = false;
-    }
-
-    if (_isDisposed || !_isScanning) {
-      return;
-    }
-
-    _appendLog(
-      timestamp: DateTime.now(),
-      category: DashboardLogCategory.action,
-      message: 'Windows passive discovery restored',
-      reason: 'windowsPassiveDiscoveryRestored',
-    );
-    _publish(_lastDecision);
-  }
-
-  void _cancelWindowsEnhancedDiscoveryTimer() {
-    _windowsEnhancedDiscoveryTimer?.cancel();
-    _windowsEnhancedDiscoveryTimer = null;
   }
 
   void _pruneExpiredVisibleDevices(DateTime timestamp) {
@@ -1675,7 +1036,6 @@ class AppCoordinator {
           config: config,
           selectedDeviceIds: Set.unmodifiable(_selectedDeviceIds),
           lockSyncConfig: _lockSyncSnapshot.config,
-          windowsIdentityProfiles: Map.unmodifiable(_windowsIdentityProfiles),
         ),
       );
     } catch (error) {
@@ -1713,6 +1073,15 @@ class AppCoordinator {
         reason: 'autoUnlockPasswordStatusFailed',
       );
     }
+  }
+
+  Future<void> _refreshAutoUnlockSecretStatusIfEnabled() async {
+    if (!_config.enableMacAutoUnlock) {
+      _isAutoUnlockSecretConfigured = false;
+      return;
+    }
+
+    await _refreshAutoUnlockSecretStatus();
   }
 
   void _cancelUnlockRetry({String? reason}) {
@@ -1988,7 +1357,7 @@ class AppCoordinator {
         error: error,
       );
     }
-    await _refreshAutoUnlockSecretStatus();
+    await _refreshAutoUnlockSecretStatusIfEnabled();
 
     _appendLog(
       timestamp: event.timestamp,
@@ -2673,6 +2042,8 @@ class AppCoordinator {
     }
 
     final currentDecision = decision ?? _lastDecision;
+    final List<DashboardLogEntry> logs =
+        List<DashboardLogEntry>.unmodifiable(_combinedLogs);
     if (currentDecision == null) {
       _value = DashboardState(
         snapshot: DashboardSnapshot(
@@ -2698,7 +2069,7 @@ class AppCoordinator {
               _isAutoUnlockPermissionSettingsAvailable,
         ),
         devices: const [],
-        logs: List.unmodifiable(_logs),
+        logs: logs,
         config: config,
         lockSync: _lockSyncSnapshot,
       );
@@ -2726,7 +2097,7 @@ class AppCoordinator {
           selectedDeviceCount: _selectedDeviceIds.length,
         ),
         devices: _devicesFromPublishedList(currentDecision),
-        logs: List.unmodifiable(_logs),
+        logs: logs,
         config: config,
         lockSync: _lockSyncSnapshot,
       );
@@ -2817,10 +2188,9 @@ class AppCoordinator {
     final candidates =
         selectedDevices.isEmpty ? _visibleDevices.values : selectedDevices;
     final event = candidates.reduce(_betterRecentDevice);
-    if (!_hasWindowsAdvertisement(event)) {
-      return '${_trayDeviceName(event)} system discovery';
-    }
-    return '${_trayDeviceName(event)} ${event.rssi} dBm';
+    return _hasWindowsAdvertisement(event)
+        ? '${_trayDeviceName(event)} ${event.rssi} dBm'
+        : '${_trayDeviceName(event)} no advertisement';
   }
 
   BleScanEvent _betterRecentDevice(BleScanEvent left, BleScanEvent right) {
@@ -2896,12 +2266,12 @@ class AppCoordinator {
       category: DashboardLogCategory.scan,
       message: hasAdvertisement
           ? 'Scan ${event.deviceId} ${event.rssi} dBm'
-          : 'Scan ${event.deviceId} system discovery',
+          : 'Scan ${event.deviceId} no advertisement',
       displayName: event.displayName,
       addressHint: event.addressHint,
       deviceId: event.deviceId,
       rssi: hasAdvertisement ? event.rssi : null,
-      reason: hasAdvertisement ? 'bleAdvertisement' : 'deviceInformation',
+      reason: hasAdvertisement ? 'bleAdvertisement' : 'noAdvertisement',
       manufacturerData: event.manufacturerData,
       rawAdvertisement: event.rawAdvertisement,
       sessionState: _sessionState,
@@ -2945,6 +2315,15 @@ class AppCoordinator {
     );
   }
 
+  List<DashboardLogEntry> get _combinedLogs {
+    final logs = <DashboardLogEntry>[
+      for (final category in DashboardLogCategory.values)
+        ...?_logsByCategory[category],
+    ];
+    logs.sort((left, right) => right.timestamp.compareTo(left.timestamp));
+    return logs;
+  }
+
   void _appendLog({
     required DateTime timestamp,
     required DashboardLogCategory category,
@@ -2959,7 +2338,11 @@ class AppCoordinator {
     Map<String, Object?>? rawAdvertisement,
     DashboardSessionState? sessionState,
   }) {
-    _logs.insert(
+    final bucket = _logsByCategory[category];
+    if (bucket == null) {
+      return;
+    }
+    bucket.insert(
       0,
       DashboardLogEntry(
         timestamp: timestamp,
@@ -2976,8 +2359,9 @@ class AppCoordinator {
         sessionState: sessionState ?? _sessionState,
       ),
     );
-    if (_logs.length > 100) {
-      _logs.removeLast();
+    final capacity = _logCapacityByCategory[category] ?? 80;
+    if (bucket.length > capacity) {
+      bucket.removeLast();
     }
   }
 
@@ -2999,10 +2383,6 @@ class AppCoordinator {
 
   bool get _isMacPlatform {
     return platform.platformLabel.trim().toLowerCase() == 'macos';
-  }
-
-  bool get _isWindowsPlatform {
-    return platform.platformLabel.trim().toLowerCase() == 'windows';
   }
 
   bool get _isAutoUnlockPermissionSettingsAvailable {
@@ -3096,30 +2476,6 @@ class _LoggedScanSample {
   final int rssi;
 }
 
-class _WindowsBleDeviceAlias {
-  const _WindowsBleDeviceAlias({
-    required this.deviceId,
-    required this.seenAt,
-  });
-
-  final String deviceId;
-  final DateTime seenAt;
-
-  _WindowsBleDeviceAlias seen(DateTime seenAt) {
-    return _WindowsBleDeviceAlias(deviceId: deviceId, seenAt: seenAt);
-  }
-}
-
-class _WindowsBleIdentityAliasResolution {
-  const _WindowsBleIdentityAliasResolution({
-    required this.deviceId,
-    required this.reason,
-  });
-
-  final String deviceId;
-  final String reason;
-}
-
 String _sessionEventLabel(SessionEventKind kind) {
   switch (kind) {
     case SessionEventKind.locked:
@@ -3162,316 +2518,6 @@ String? _normalizedText(String? value) {
   return text;
 }
 
-String? _normalizedStableText(Object? value) {
-  if (value is! String) {
-    return null;
-  }
-  final normalized = _normalizedText(value)?.toLowerCase();
-  if (normalized == null ||
-      normalized == 'unknown device' ||
-      normalized == 'unknown' ||
-      normalized == 'bluetooth' ||
-      normalized.startsWith('bluetooth ')) {
-    return null;
-  }
-  return normalized;
-}
-
-String? _stableBleName(BleScanEvent event) {
-  return _normalizedStableText(event.displayName) ??
-      _normalizedStableText(event.rawAdvertisement?['localName']) ??
-      _normalizedStableText(event.rawAdvertisement?['deviceInformationName']);
-}
-
-String? _windowsBroadcastAddress(BleScanEvent event) {
-  return _normalizedWindowsAddress(
-        event.rawAdvertisement?['bluetoothAddress'],
-      ) ??
-      _normalizedWindowsAddress(
-        event.rawAdvertisement?['bluetoothAddressHint'],
-      ) ??
-      _normalizedWindowsAddress(event.addressHint) ??
-      _normalizedWindowsAddress(event.deviceId);
-}
-
-String? _normalizedWindowsAddress(Object? value) {
-  if (value == null) {
-    return null;
-  }
-  final normalized =
-      value.toString().replaceAll(RegExp(r'[^0-9a-fA-F]'), '').toLowerCase();
-  if (normalized.length != 12) {
-    return null;
-  }
-  return normalized;
-}
-
-Set<String> _serviceUuidSet(BleScanEvent event) {
-  final values = event.rawAdvertisement?['serviceUuids'];
-  if (values is! List) {
-    return const {};
-  }
-  return values
-      .whereType<String>()
-      .map((value) => value.trim().toLowerCase())
-      .where((value) => value.isNotEmpty)
-      .toSet();
-}
-
-Set<String> _windowsDeviceInformationIdSet(BleScanEvent event) {
-  final value = _normalizedText(
-    event.rawAdvertisement?['deviceInformationId']?.toString(),
-  );
-  return value == null ? const {} : {value.toLowerCase()};
-}
-
-Set<String> _manufacturerFingerprintSet(BleScanEvent event) {
-  final sections = event.rawAdvertisement?['manufacturerDataSections'];
-  if (sections is List) {
-    final fingerprints = <String>{};
-    for (final section in sections) {
-      if (section is! Map) {
-        continue;
-      }
-      final companyId = _manufacturerCompanyId(section);
-      final payloadHex = _rawString(section['payloadHex']) ??
-          _manufacturerDataHex(event.manufacturerData);
-      if (companyId == null || payloadHex == null || payloadHex.length < 8) {
-        continue;
-      }
-      fingerprints.add('$companyId:${_hexPrefix(payloadHex, 16)}');
-    }
-    return fingerprints;
-  }
-
-  final companyIds = _manufacturerCompanyIdSet(event);
-  final dataHex = _manufacturerDataHex(event.manufacturerData);
-  if (companyIds.isEmpty || dataHex == null || dataHex.length < 8) {
-    return const {};
-  }
-  return {
-    for (final companyId in companyIds) '$companyId:${_hexPrefix(dataHex, 16)}',
-  };
-}
-
-Set<String> _manufacturerCompanyIdSet(BleScanEvent event) {
-  final sections = event.rawAdvertisement?['manufacturerDataSections'];
-  if (sections is List) {
-    final ids = <String>{};
-    for (final section in sections) {
-      if (section is Map) {
-        final companyId = _manufacturerCompanyId(section);
-        if (companyId != null) {
-          ids.add(companyId);
-        }
-      }
-    }
-    if (ids.isNotEmpty) {
-      return ids;
-    }
-  }
-
-  final data = event.manufacturerData;
-  if (data == null || data.length < 2) {
-    return const {};
-  }
-  final companyId = data[0] | (data[1] << 8);
-  return {companyId.toString()};
-}
-
-Set<String> _identityManufacturerFingerprintSet(BleScanEvent event) {
-  return _manufacturerFingerprintSet(event)
-      .where((value) => !_isAppleManufacturerFingerprint(value))
-      .toSet();
-}
-
-Set<String> _identityManufacturerCompanyIdSet(BleScanEvent event) {
-  return _manufacturerCompanyIdSet(event)
-      .where((value) => value != '76')
-      .toSet();
-}
-
-Set<String> _identityProfileManufacturerFingerprints(
-  WindowsBleIdentityProfile profile,
-) {
-  return profile.manufacturerFingerprints
-      .where((value) => !_isAppleManufacturerFingerprint(value))
-      .toSet();
-}
-
-Set<String> _identityProfileManufacturerCompanyIds(
-  WindowsBleIdentityProfile profile,
-) {
-  return profile.manufacturerCompanyIds.where((value) => value != '76').toSet();
-}
-
-bool _isAppleManufacturerFingerprint(String value) {
-  return value.trim().toLowerCase().startsWith('76:');
-}
-
-String? _manufacturerCompanyId(Map section) {
-  final companyId = section['companyId'];
-  if (companyId is int) {
-    return companyId.toString();
-  }
-
-  final companyIdHex = _rawString(section['companyIdHex']);
-  if (companyIdHex == null) {
-    return null;
-  }
-  final trimmed = companyIdHex.toLowerCase().replaceFirst('0x', '');
-  final parsed = int.tryParse(trimmed, radix: 16);
-  return parsed?.toString();
-}
-
-String? _manufacturerDataHex(List<int>? data) {
-  if (data == null || data.isEmpty) {
-    return null;
-  }
-  final buffer = StringBuffer();
-  for (final byte in data) {
-    if (byte < 0 || byte > 255) {
-      return null;
-    }
-    buffer.write(byte.toRadixString(16).padLeft(2, '0'));
-  }
-  return buffer.toString();
-}
-
-String? _normalizedHex(String? value) {
-  final normalized =
-      value?.replaceAll(RegExp(r'[^0-9a-fA-F]'), '').toLowerCase();
-  if (normalized == null || normalized.isEmpty) {
-    return null;
-  }
-  return normalized;
-}
-
-bool _isIphoneDisplayName(String? value) {
-  final normalized = _normalizedText(value)?.toLowerCase();
-  return normalized != null && normalized.contains('iphone');
-}
-
-bool _isWindowsAppleManufacturerCandidate(BleScanEvent event) {
-  if (_manufacturerCompanyIdSet(event).contains('76')) {
-    return true;
-  }
-
-  final dataSections = event.rawAdvertisement?['dataSections'];
-  if (dataSections is! List) {
-    return false;
-  }
-  for (final section in dataSections) {
-    if (section is! Map || !_isManufacturerSpecificDataSection(section)) {
-      continue;
-    }
-    if (_normalizedHex(_rawString(section['dataHex']))?.startsWith('4c00') ==
-        true) {
-      return true;
-    }
-  }
-  return false;
-}
-
-bool _hasWindowsAppleNearbyManufacturerPayload(BleScanEvent event) {
-  final sections = event.rawAdvertisement?['manufacturerDataSections'];
-  if (sections is List) {
-    for (final section in sections) {
-      if (section is! Map || _manufacturerCompanyId(section) != '76') {
-        continue;
-      }
-      if (_isAppleNearbyManufacturerHex(_rawString(section['dataHex'])) ||
-          _isAppleNearbyManufacturerHex(_rawString(section['payloadHex']))) {
-        return true;
-      }
-    }
-  }
-
-  final dataSections = event.rawAdvertisement?['dataSections'];
-  if (dataSections is List) {
-    for (final section in dataSections) {
-      if (section is! Map || !_isManufacturerSpecificDataSection(section)) {
-        continue;
-      }
-      if (_isAppleNearbyManufacturerHex(_rawString(section['dataHex']))) {
-        return true;
-      }
-    }
-  }
-
-  return _isAppleNearbyManufacturerHex(
-    _manufacturerDataHex(event.manufacturerData),
-  );
-}
-
-bool _isAppleNearbyManufacturerHex(String? value) {
-  final normalized = _normalizedHex(value);
-  if (normalized == null) {
-    return false;
-  }
-  return normalized.startsWith('1007') || normalized.startsWith('4c001007');
-}
-
-bool _isManufacturerSpecificDataSection(Map section) {
-  if (_rawInt(section['dataType']) == 255) {
-    return true;
-  }
-  return _normalizedHex(_rawString(section['dataTypeHex'])) == 'ff';
-}
-
-String _hexPrefix(String value, int maxLength) {
-  final normalized =
-      value.replaceAll(RegExp(r'[^0-9a-fA-F]'), '').toLowerCase();
-  if (normalized.length <= maxLength) {
-    return normalized;
-  }
-  return normalized.substring(0, maxLength);
-}
-
-bool _hasIntersection(Set<String> left, Set<String> right) {
-  if (left.isEmpty || right.isEmpty) {
-    return false;
-  }
-  return left.any(right.contains);
-}
-
-bool _windowsIdentityProfileChanged(
-  WindowsBleIdentityProfile previous,
-  WindowsBleIdentityProfile next,
-) {
-  return previous.deviceId != next.deviceId ||
-      previous.displayName != next.displayName ||
-      previous.addressHint != next.addressHint ||
-      !_sameStringSet(previous.broadcastAddresses, next.broadcastAddresses) ||
-      !_sameStringSet(
-        previous.deviceInformationIds,
-        next.deviceInformationIds,
-      ) ||
-      !_sameStringSet(previous.serviceUuids, next.serviceUuids) ||
-      !_sameStringSet(
-        previous.manufacturerCompanyIds,
-        next.manufacturerCompanyIds,
-      ) ||
-      !_sameStringSet(
-        previous.manufacturerFingerprints,
-        next.manufacturerFingerprints,
-      );
-}
-
-bool _sameStringSet(Set<String> left, Set<String> right) {
-  if (left.length != right.length) {
-    return false;
-  }
-  return left.every(right.contains);
-}
-
-String? _rawString(Object? value) {
-  if (value is! String) {
-    return null;
-  }
-  return _normalizedText(value);
-}
-
 bool _rawBool(Object? value) {
   if (value is bool) {
     return value;
@@ -3506,11 +2552,6 @@ bool _hasWindowsAdvertisement(BleScanEvent event) {
   if (rawAdvertisement == null) {
     return true;
   }
-  if (_rawString(rawAdvertisement['source']) == 'deviceInformation') {
-    return _rawBool(rawAdvertisement['hasAdvertisement']) &&
-        _rawInt(rawAdvertisement['packetCount']) > 0 &&
-        event.rssi > -127;
-  }
   if (rawAdvertisement.containsKey('hasAdvertisement')) {
     return _rawBool(rawAdvertisement['hasAdvertisement']);
   }
@@ -3529,6 +2570,13 @@ String _presenceStateLabel(DevicePresenceState state) {
     case DevicePresenceState.lost:
       return 'lost';
   }
+}
+
+ProximityConfig _normalizeProximityConfig(ProximityConfig config) {
+  if (config.lockRssi <= config.unlockRssi) {
+    return config;
+  }
+  return config.copyWith(lockRssi: config.unlockRssi);
 }
 
 String _generateLockSyncSecret() {

@@ -225,8 +225,6 @@ const Map<String, String> _exactLabels = {
   'externalLock': '外部锁屏',
   'remoteLock': '远程锁屏',
   'unlockFailed': '解锁失败',
-  'System discovery': '系统发现',
-  'deviceInformation': '系统发现',
   'autoUnlockSuppressedForRetry': '自动解锁已暂停',
   'failed': '失败',
   'unknown': '未知',

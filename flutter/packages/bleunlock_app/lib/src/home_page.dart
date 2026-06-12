@@ -7,6 +7,7 @@ import 'package:bleunlock_app/src/sections/overview_section.dart';
 import 'package:bleunlock_app/src/sections/rules_section.dart';
 import 'package:bleunlock_app/src/sections/system_section.dart';
 import 'package:bleunlock_app/src/view_models/dashboard_state.dart';
+import 'package:bleunlock_app/src/widgets/primary_action_row.dart';
 import 'package:flutter/material.dart';
 
 class BLEUnlockHomePage extends StatefulWidget {
@@ -62,6 +63,8 @@ class _BLEUnlockHomePageState extends State<BLEUnlockHomePage> {
         _syncRoleEditors(state.lockSync.config);
 
         final isMonitoring = state.snapshot.monitoringStatus == 'Monitoring';
+        final isScanning =
+            isMonitoring || state.snapshot.monitoringStatus == 'Scanning';
         final canStartMonitoring = state.devices.any(
           (device) => device.isSelected,
         );
@@ -91,6 +94,13 @@ class _BLEUnlockHomePageState extends State<BLEUnlockHomePage> {
                   title: _titleForItem(activeItem, state.lockSync.config.role),
                   subtitle:
                       _subtitleForItem(activeItem, state.lockSync.config.role),
+                  actions: _buildHeaderActions(
+                    item: activeItem,
+                    state: state,
+                    isScanning: isScanning,
+                    isMonitoring: isMonitoring,
+                    canStartMonitoring: canStartMonitoring,
+                  ),
                   child: _buildContent(
                     item: activeItem,
                     state: state,
@@ -173,7 +183,6 @@ class _BLEUnlockHomePageState extends State<BLEUnlockHomePage> {
             onStartScanning: widget.coordinator.startScanning,
             onStartMonitoring: widget.coordinator.startMonitoring,
             onPauseScanning: widget.coordinator.pause,
-            onRefreshDevices: widget.coordinator.refreshDeviceList,
             onDeviceSelectionChanged: widget.coordinator.setDeviceSelected,
           ),
         );
@@ -223,6 +232,41 @@ class _BLEUnlockHomePageState extends State<BLEUnlockHomePage> {
             logs: state.logs,
           ),
         );
+    }
+  }
+
+  Widget? _buildHeaderActions({
+    required _AppNavItem item,
+    required DashboardState state,
+    required bool isScanning,
+    required bool isMonitoring,
+    required bool canStartMonitoring,
+  }) {
+    switch (item) {
+      case _AppNavItem.devices:
+        return PrimaryActionRow(
+          isScanning: isScanning,
+          isMonitoring: isMonitoring,
+          onStartScanning: widget.coordinator.startScanning,
+          onStartMonitoring: widget.coordinator.startMonitoring,
+          onPauseScanning: widget.coordinator.pause,
+          canStartMonitoring: canStartMonitoring,
+          monitoringHint:
+              !isMonitoring && state.devices.isNotEmpty && !canStartMonitoring
+                  ? '请先选择一个或多个设备，再开始监听。'
+                  : null,
+        );
+      case _AppNavItem.rules:
+        return OutlinedButton.icon(
+          onPressed: widget.coordinator.resetRulesAndSelectedDevices,
+          icon: const Icon(Icons.restart_alt),
+          label: const Text('重置规则和设备'),
+        );
+      case _AppNavItem.role:
+      case _AppNavItem.overview:
+      case _AppNavItem.system:
+      case _AppNavItem.logs:
+        return null;
     }
   }
 
@@ -429,11 +473,13 @@ class _MainWorkspace extends StatelessWidget {
     required this.title,
     required this.subtitle,
     required this.child,
+    this.actions,
   });
 
   final String title;
   final String subtitle;
   final Widget child;
+  final Widget? actions;
 
   @override
   Widget build(BuildContext context) {
@@ -448,20 +494,36 @@ class _MainWorkspace extends StatelessWidget {
               bottom: BorderSide(color: Color(0xFFE2E8E7)),
             ),
           ),
-          child: Column(
+          child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                title,
-                style: Theme.of(context).textTheme.headlineMedium,
-              ),
-              const SizedBox(height: 6),
-              Text(
-                subtitle,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: const Color(0xFF62716E),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: Theme.of(context).textTheme.headlineMedium,
                     ),
+                    const SizedBox(height: 6),
+                    Text(
+                      subtitle,
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            color: const Color(0xFF62716E),
+                          ),
+                    ),
+                  ],
+                ),
               ),
+              if (actions != null) ...[
+                const SizedBox(width: 20),
+                Flexible(
+                  child: Align(
+                    alignment: Alignment.topRight,
+                    child: actions,
+                  ),
+                ),
+              ],
             ],
           ),
         ),
@@ -1100,6 +1162,8 @@ class _ServerOverviewWorkspace extends StatelessWidget {
         children: [
           _ServerHeroPanel(
             lockSync: state.lockSync,
+            snapshot: state.snapshot,
+            devices: state.devices,
           ),
         ],
       ),
@@ -1110,9 +1174,13 @@ class _ServerOverviewWorkspace extends StatelessWidget {
 class _ServerHeroPanel extends StatelessWidget {
   const _ServerHeroPanel({
     required this.lockSync,
+    required this.snapshot,
+    required this.devices,
   });
 
   final LockSyncSnapshot lockSync;
+  final DashboardSnapshot snapshot;
+  final List<DashboardDeviceView> devices;
 
   @override
   Widget build(BuildContext context) {
@@ -1161,6 +1229,11 @@ class _ServerHeroPanel extends StatelessWidget {
           _RoleOverviewMetricGrid(
             items: [
               _RoleOverviewMetric(
+                label: '状态',
+                value: zhDisplayText(snapshot.stateLabel),
+                icon: Icons.sensors_outlined,
+              ),
+              _RoleOverviewMetric(
                 label: 'Client',
                 value: lockSync.connectedClientCount.toString(),
                 icon: Icons.devices_outlined,
@@ -1170,7 +1243,106 @@ class _ServerHeroPanel extends StatelessWidget {
                 value: lockSync.lastEventLabel ?? '无',
                 icon: Icons.bolt_outlined,
               ),
+              _RoleOverviewMetric(
+                label: '最近动作',
+                value: zhDisplayText(snapshot.lastActionLabel),
+                icon: Icons.lock_outline,
+              ),
             ],
+          ),
+          const SizedBox(height: 16),
+          _ServerDeviceSummary(devices: devices),
+        ],
+      ),
+    );
+  }
+}
+
+class _ServerDeviceSummary extends StatelessWidget {
+  const _ServerDeviceSummary({required this.devices});
+
+  final List<DashboardDeviceView> devices;
+
+  @override
+  Widget build(BuildContext context) {
+    final selectedDevices =
+        devices.where((device) => device.isSelected).toList(growable: false);
+    return _PlainPanel(
+      title: '本机设备',
+      child: selectedDevices.isEmpty
+          ? const Text('暂无已选设备')
+          : Column(
+              children: [
+                for (final device in selectedDevices.take(4))
+                  _ServerDeviceTile(device: device),
+                if (selectedDevices.length > 4)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Text(
+                        '还有 ${selectedDevices.length - 4} 个已选设备',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: const Color(0xFF65736F),
+                            ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+    );
+  }
+}
+
+class _ServerDeviceTile extends StatelessWidget {
+  const _ServerDeviceTile({required this.device});
+
+  final DashboardDeviceView device;
+
+  @override
+  Widget build(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 7),
+      child: Row(
+        children: [
+          const Icon(
+            Icons.bluetooth_connected,
+            size: 18,
+            color: Color(0xFF006A62),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  _serverDeviceLabel(device),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: textTheme.bodyMedium,
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  zhDisplayText(device.lastSeenLabel),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: textTheme.bodySmall?.copyWith(
+                    color: const Color(0xFF65736F),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+          Text(
+            zhDisplayText(device.presenceLabel),
+            style: textTheme.bodySmall,
+          ),
+          const SizedBox(width: 10),
+          Text(
+            zhDisplayText(device.rssiLabel),
+            style: textTheme.titleSmall,
           ),
         ],
       ),
@@ -1554,7 +1726,7 @@ String _subtitleForItem(_AppNavItem item, LockSyncRole role) {
     case _AppNavItem.overview:
       switch (role) {
         case LockSyncRole.server:
-          return '查看 Client 数量和最近事件。';
+          return '查看本机 BLE 设备、Client 数量和最近事件。';
         case LockSyncRole.client:
           return '查看 Client 连接状态和最近事件。';
         case LockSyncRole.disabled:
@@ -1593,6 +1765,18 @@ IconData _lockSyncStatusIcon(LockSyncSnapshot snapshot) {
     case LockSyncRuntimeState.stopped:
       return Icons.pause_circle_outline;
   }
+}
+
+String _serverDeviceLabel(DashboardDeviceView device) {
+  final name = device.name.trim();
+  final idLabel = device.idLabel.trim();
+  if (name.isEmpty) {
+    return idLabel;
+  }
+  if (idLabel.isEmpty || name == idLabel) {
+    return name;
+  }
+  return '$name · $idLabel';
 }
 
 String _roleDescription(LockSyncRole role) {

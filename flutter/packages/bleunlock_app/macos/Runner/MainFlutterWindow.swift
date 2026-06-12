@@ -21,6 +21,18 @@ class MainFlutterWindow: NSWindow {
 private final class CloseToBackgroundWindowDelegate: NSObject, NSWindowDelegate {
   func windowShouldClose(_ sender: NSWindow) -> Bool {
     sender.orderOut(nil)
+    DispatchQueue.main.async {
+      let hasVisibleAppWindow = NSApp.windows.contains { window in
+        window.isVisible && window.canBecomeMain
+      }
+      if !hasVisibleAppWindow {
+        NSApp.setActivationPolicy(.accessory)
+      }
+    }
     return false
+  }
+
+  func windowDidBecomeKey(_ notification: Notification) {
+    NSApp.setActivationPolicy(.regular)
   }
 }

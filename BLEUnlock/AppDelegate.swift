@@ -1380,6 +1380,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
         let value = menuItem.tag
         prefs.set(value, forKey: "unlockRSSI")
         ble.unlockRSSI = value
+        if value != ble.UNLOCK_DISABLED && !prefs.bool(forKey: "wakeWithoutUnlocking") && fetchPassword() == nil {
+            askPassword()
+        }
     }
 
     @objc func setTimeout(_ menuItem: NSMenuItem) {
@@ -1892,9 +1895,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, NSMenuItemVa
         dnc.addObserver(self, selector: #selector(onScreensaverStart), name: NSNotification.Name(rawValue: "com.apple.screensaver.didstart"), object: nil)
         dnc.addObserver(self, selector: #selector(onScreensaverStop), name: NSNotification.Name(rawValue: "com.apple.screensaver.didstop"), object: nil)
 
-        if ble.unlockRSSI != ble.UNLOCK_DISABLED && !prefs.bool(forKey: "wakeWithoutUnlocking") && fetchPassword() == nil {
-            askPassword()
-        }
         if prefs.bool(forKey: "launchAtLogin") {
             _ = setLaunchAtLogin(true, showErrors: false)
         }

@@ -1983,10 +1983,6 @@ String _rssiLabel(BleDevice device) {
   if (rssi != null) {
     return '$rssi dBm';
   }
-  final source = device.rawAdvertisement?['source'];
-  if (source is String && source == 'deviceInformation') {
-    return 'System discovery';
-  }
   return '-- dBm';
 }
 
@@ -2101,10 +2097,6 @@ String? _windowsBroadcastAddressLabel(Map<String, Object?>? rawAdvertisement) {
   final compactAddress =
       _normalizedBluetoothAddress(rawAdvertisement?['bluetoothAddress']);
   if (compactAddress == null) {
-    final source = rawAdvertisement?['source'];
-    if (source is String && source == 'deviceInformation') {
-      return '系统发现';
-    }
     return null;
   }
   return '广播地址 ${_colonSeparatedBluetoothAddress(compactAddress)}';

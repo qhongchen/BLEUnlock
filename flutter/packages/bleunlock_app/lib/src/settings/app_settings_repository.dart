@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:bleunlock_app/src/lock_sync/lock_sync_models.dart';
 import 'package:bleunlock_core/bleunlock_core.dart';
@@ -9,14 +10,12 @@ class AppSettings {
     required this.config,
     required this.selectedDeviceIds,
     this.lockSyncConfig = const LockSyncConfig(),
-    this.windowsIdentityProfiles = const {},
   });
 
   factory AppSettings.fromJson(Map<String, Object?> json) {
     final configJson = json['config'];
     final selectedIdsJson = json['selectedDeviceIds'];
     final lockSyncJson = json['lockSyncConfig'];
-    final windowsProfilesJson = json['windowsIdentityProfiles'];
 
     return AppSettings(
       config: configJson is Map
@@ -28,129 +27,28 @@ class AppSettings {
       lockSyncConfig: lockSyncJson is Map
           ? LockSyncConfig.fromJson(lockSyncJson.cast<String, Object?>())
           : const LockSyncConfig(),
-      windowsIdentityProfiles: windowsProfilesJson is Map
-          ? _windowsIdentityProfilesFromJson(
-              windowsProfilesJson.cast<String, Object?>(),
-            )
-          : const {},
     );
   }
 
   final ProximityConfig config;
   final Set<String> selectedDeviceIds;
   final LockSyncConfig lockSyncConfig;
-  final Map<String, WindowsBleIdentityProfile> windowsIdentityProfiles;
 
-  Map<String, Object?> toJson() {
+  Map<String, Object?> toJson({bool includeLockSyncSharedSecret = true}) {
     final sortedSelectedIds = selectedDeviceIds.toList()..sort();
-    final sortedWindowsProfiles = Map.fromEntries(
-      windowsIdentityProfiles.entries.toList()
-        ..sort((left, right) => left.key.compareTo(right.key)),
+    final serializedLockSyncConfig = lockSyncConfig.copyWith(
+      sharedSecret:
+          includeLockSyncSharedSecret ? lockSyncConfig.sharedSecret : '',
     );
     return {
       'version': 2,
       'config': _configToJson(config),
       'selectedDeviceIds': sortedSelectedIds,
-      if (!lockSyncConfig.isDefault) 'lockSyncConfig': lockSyncConfig.toJson(),
-      if (sortedWindowsProfiles.isNotEmpty)
-        'windowsIdentityProfiles': {
-          for (final entry in sortedWindowsProfiles.entries)
-            entry.key: entry.value.toJson(),
-        },
+      if (!serializedLockSyncConfig.isDefault)
+        'lockSyncConfig': lockSyncConfig.toJson(
+          includeSharedSecret: includeLockSyncSharedSecret,
+        ),
     };
-  }
-}
-
-class WindowsBleIdentityProfile {
-  const WindowsBleIdentityProfile({
-    required this.deviceId,
-    this.displayName,
-    this.addressHint,
-    this.broadcastAddresses = const {},
-    this.deviceInformationIds = const {},
-    this.serviceUuids = const {},
-    this.manufacturerCompanyIds = const {},
-    this.manufacturerFingerprints = const {},
-    this.lastSeenAt,
-  });
-
-  factory WindowsBleIdentityProfile.fromJson(Map<String, Object?> json) {
-    final deviceId = _stringValue(json['deviceId']);
-    return WindowsBleIdentityProfile(
-      deviceId: deviceId ?? '',
-      displayName: _stringValue(json['displayName']),
-      addressHint: _stringValue(json['addressHint']),
-      broadcastAddresses: _stringSet(json['broadcastAddresses']),
-      deviceInformationIds: _stringSet(json['deviceInformationIds']),
-      serviceUuids: _stringSet(json['serviceUuids']),
-      manufacturerCompanyIds: _stringSet(json['manufacturerCompanyIds']),
-      manufacturerFingerprints: _stringSet(json['manufacturerFingerprints']),
-      lastSeenAt: _dateTimeValue(json['lastSeenAt']),
-    );
-  }
-
-  final String deviceId;
-  final String? displayName;
-  final String? addressHint;
-  final Set<String> broadcastAddresses;
-  final Set<String> deviceInformationIds;
-  final Set<String> serviceUuids;
-  final Set<String> manufacturerCompanyIds;
-  final Set<String> manufacturerFingerprints;
-  final DateTime? lastSeenAt;
-
-  Map<String, Object?> toJson() {
-    return {
-      'deviceId': deviceId,
-      if (displayName != null) 'displayName': displayName,
-      if (addressHint != null) 'addressHint': addressHint,
-      if (broadcastAddresses.isNotEmpty)
-        'broadcastAddresses': _sortedList(broadcastAddresses),
-      if (deviceInformationIds.isNotEmpty)
-        'deviceInformationIds': _sortedList(deviceInformationIds),
-      if (serviceUuids.isNotEmpty) 'serviceUuids': _sortedList(serviceUuids),
-      if (manufacturerCompanyIds.isNotEmpty)
-        'manufacturerCompanyIds': _sortedList(manufacturerCompanyIds),
-      if (manufacturerFingerprints.isNotEmpty)
-        'manufacturerFingerprints': _sortedList(manufacturerFingerprints),
-      if (lastSeenAt != null)
-        'lastSeenAt': lastSeenAt!.toUtc().toIso8601String(),
-    };
-  }
-
-  WindowsBleIdentityProfile merge({
-    String? displayName,
-    String? addressHint,
-    Set<String> broadcastAddresses = const {},
-    Set<String> deviceInformationIds = const {},
-    Set<String> serviceUuids = const {},
-    Set<String> manufacturerCompanyIds = const {},
-    Set<String> manufacturerFingerprints = const {},
-    DateTime? lastSeenAt,
-  }) {
-    return WindowsBleIdentityProfile(
-      deviceId: deviceId,
-      displayName: displayName ?? this.displayName,
-      addressHint: addressHint ?? this.addressHint,
-      broadcastAddresses: _boundedUnion(
-        this.broadcastAddresses,
-        broadcastAddresses,
-      ),
-      deviceInformationIds: _boundedUnion(
-        this.deviceInformationIds,
-        deviceInformationIds,
-      ),
-      serviceUuids: _boundedUnion(this.serviceUuids, serviceUuids),
-      manufacturerCompanyIds: _boundedUnion(
-        this.manufacturerCompanyIds,
-        manufacturerCompanyIds,
-      ),
-      manufacturerFingerprints: _boundedUnion(
-        this.manufacturerFingerprints,
-        manufacturerFingerprints,
-      ),
-      lastSeenAt: lastSeenAt ?? this.lastSeenAt,
-    );
   }
 }
 
@@ -204,6 +102,105 @@ class SecureStoreAppSettingsRepository implements AppSettingsRepository {
   }
 }
 
+class FileAppSettingsRepository implements AppSettingsRepository {
+  FileAppSettingsRepository({
+    File? file,
+    SecureStore? secureStore,
+    String lockSyncSharedSecretKey = _defaultLockSyncSharedSecretKey,
+  })  : _file = file ?? defaultSettingsFile(),
+        _secureStore = secureStore,
+        _lockSyncSharedSecretKey = lockSyncSharedSecretKey;
+
+  static const String _defaultLockSyncSharedSecretKey = 'lockSyncSharedSecret';
+
+  final File _file;
+  final SecureStore? _secureStore;
+  final String _lockSyncSharedSecretKey;
+
+  static File defaultSettingsFile() {
+    return File('${_defaultSettingsDirectory().path}/settings.json');
+  }
+
+  @override
+  Future<AppSettings?> load() async {
+    if (!await _file.exists()) {
+      return null;
+    }
+
+    try {
+      final decoded = jsonDecode(await _file.readAsString());
+      if (decoded is! Map) {
+        return null;
+      }
+
+      final settings = AppSettings.fromJson(decoded.cast<String, Object?>());
+      final lockSyncConfig = await _hydrateLockSyncSharedSecret(
+        settings.lockSyncConfig,
+      );
+      return AppSettings(
+        config: settings.config,
+        selectedDeviceIds: settings.selectedDeviceIds,
+        lockSyncConfig: lockSyncConfig,
+      );
+    } on FormatException {
+      return null;
+    } on FileSystemException {
+      return null;
+    }
+  }
+
+  @override
+  Future<void> save(AppSettings settings) async {
+    await _persistLockSyncSharedSecret(settings.lockSyncConfig);
+
+    await _file.parent.create(recursive: true);
+    await _file.writeAsString(
+      jsonEncode(settings.toJson(includeLockSyncSharedSecret: false)),
+    );
+  }
+
+  Future<LockSyncConfig> _hydrateLockSyncSharedSecret(
+    LockSyncConfig config,
+  ) async {
+    if (!config.isEnabled || config.hasSharedSecret) {
+      return config;
+    }
+
+    final secureStore = _secureStore;
+    if (secureStore == null || !secureStore.capability.isUsable) {
+      return config;
+    }
+
+    final sharedSecret = await secureStore.readSecret(
+      _lockSyncSharedSecretKey,
+    );
+    if (sharedSecret == null || sharedSecret.trim().isEmpty) {
+      return config;
+    }
+
+    return config.copyWith(sharedSecret: sharedSecret.trim());
+  }
+
+  Future<void> _persistLockSyncSharedSecret(LockSyncConfig config) async {
+    final secureStore = _secureStore;
+    if (secureStore == null || !secureStore.capability.isUsable) {
+      return;
+    }
+
+    if (config.hasSharedSecret) {
+      await secureStore.writeSecret(
+        _lockSyncSharedSecretKey,
+        config.sharedSecret.trim(),
+      );
+      return;
+    }
+
+    if (!config.isDefault) {
+      await secureStore.deleteSecret(_lockSyncSharedSecretKey);
+    }
+  }
+}
+
 class InMemoryAppSettingsRepository implements AppSettingsRepository {
   InMemoryAppSettingsRepository({AppSettings? initialSettings})
       : savedSettings = initialSettings;
@@ -217,6 +214,34 @@ class InMemoryAppSettingsRepository implements AppSettingsRepository {
   Future<void> save(AppSettings settings) async {
     savedSettings = settings;
   }
+}
+
+Directory _defaultSettingsDirectory() {
+  if (Platform.isMacOS) {
+    final home = Platform.environment['HOME'];
+    if (home != null && home.trim().isNotEmpty) {
+      return Directory('$home/Library/Application Support/BLEUnlock');
+    }
+  }
+
+  if (Platform.isWindows) {
+    final appData = Platform.environment['APPDATA'];
+    if (appData != null && appData.trim().isNotEmpty) {
+      return Directory('$appData/BLEUnlock');
+    }
+  }
+
+  final xdgConfigHome = Platform.environment['XDG_CONFIG_HOME'];
+  if (xdgConfigHome != null && xdgConfigHome.trim().isNotEmpty) {
+    return Directory('$xdgConfigHome/BLEUnlock');
+  }
+
+  final home = Platform.environment['HOME'];
+  if (home != null && home.trim().isNotEmpty) {
+    return Directory('$home/.config/BLEUnlock');
+  }
+
+  return Directory('${Directory.systemTemp.path}/BLEUnlock');
 }
 
 Map<String, Object?> _configToJson(ProximityConfig config) {
@@ -271,77 +296,4 @@ LockDeviceLogic _lockLogicValue(Object? value) {
     }
   }
   return LockDeviceLogic.allAway;
-}
-
-Map<String, WindowsBleIdentityProfile> _windowsIdentityProfilesFromJson(
-  Map<String, Object?> json,
-) {
-  final profiles = <String, WindowsBleIdentityProfile>{};
-  for (final entry in json.entries) {
-    final value = entry.value;
-    if (value is! Map) {
-      continue;
-    }
-    final profile = WindowsBleIdentityProfile.fromJson(
-      value.cast<String, Object?>(),
-    );
-    final deviceId = profile.deviceId.isEmpty ? entry.key : profile.deviceId;
-    profiles[deviceId] = profile.deviceId.isEmpty
-        ? WindowsBleIdentityProfile(
-            deviceId: deviceId,
-            displayName: profile.displayName,
-            addressHint: profile.addressHint,
-            broadcastAddresses: profile.broadcastAddresses,
-            deviceInformationIds: profile.deviceInformationIds,
-            serviceUuids: profile.serviceUuids,
-            manufacturerCompanyIds: profile.manufacturerCompanyIds,
-            manufacturerFingerprints: profile.manufacturerFingerprints,
-            lastSeenAt: profile.lastSeenAt,
-          )
-        : profile;
-  }
-  return Map.unmodifiable(profiles);
-}
-
-String? _stringValue(Object? value) {
-  if (value is! String) {
-    return null;
-  }
-  final trimmed = value.trim();
-  return trimmed.isEmpty ? null : trimmed;
-}
-
-Set<String> _stringSet(Object? value) {
-  if (value is! List) {
-    return const {};
-  }
-  return value
-      .whereType<String>()
-      .map((item) => item.trim())
-      .where((item) => item.isNotEmpty)
-      .toSet();
-}
-
-DateTime? _dateTimeValue(Object? value) {
-  final text = _stringValue(value);
-  return text == null ? null : DateTime.tryParse(text);
-}
-
-List<String> _sortedList(Set<String> values) {
-  return values.toList()..sort();
-}
-
-Set<String> _boundedUnion(
-  Set<String> previous,
-  Set<String> next, {
-  int limit = 16,
-}) {
-  final values = <String>[...previous, ...next]
-      .map((value) => value.trim())
-      .where((value) => value.isNotEmpty)
-      .toList();
-  if (values.length <= limit) {
-    return values.toSet();
-  }
-  return values.skip(values.length - limit).toSet();
 }

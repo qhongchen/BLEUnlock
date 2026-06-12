@@ -102,7 +102,9 @@ Future<void> testWindowsNativeKeepsPermanentScanPathLightweight() async {
   final source = File(sourcePath).readAsStringSync();
 
   assert(source.contains('BluetoothLEScanningMode::Passive'));
-  assert(source.contains('BluetoothLEScanningMode::Active'));
+  assert(!source.contains('BluetoothLEScanningMode::Active'));
+  assert(!source.contains('DeviceInformation::CreateWatcher'));
+  assert(!source.contains('DeviceWatcher'));
   assert(!source.contains('BluetoothLEDevice::FromBluetoothAddressAsync'));
   assert(!source.contains('DeviceInformation::CreateFromIdAsync'));
   assert(!source.contains('GetGattServicesForUuidAsync'));
@@ -131,12 +133,11 @@ Future<void> testWindowsNativeUsesPassiveBleScanningByDefault() async {
   final source = File(sourcePath).readAsStringSync();
 
   assert(source.contains('BluetoothLEScanningMode::Passive'));
-  assert(source.contains('mode == "active"'));
-  assert(source.contains('StartScan(active)'));
-  assert(source.contains('ble_watcher_->active != active'));
-  assert(source.contains('if (active)'));
-  assert(source.contains('StartDeviceWatcher();'));
-  assert(source.contains('StopDeviceWatcher();'));
+  assert(source.contains('StartScan();'));
+  assert(!source.contains('mode == "active"'));
+  assert(!source.contains('StartScan(active)'));
+  assert(!source.contains('StartDeviceWatcher'));
+  assert(!source.contains('StopDeviceWatcher'));
   assert(source.contains(
     'ble_watcher_->watcher.Received(ble_watcher_->received_token);',
   ));
@@ -176,13 +177,10 @@ Future<void> testWindowsNativeExportsRawAdvertisementDiagnostics() async {
   assert(source.contains('"serviceUuids"'));
   assert(source.contains('"scanResponseSeen"'));
   assert(source.contains('"packetCount"'));
-  assert(source.contains('"deviceInformationName"'));
-  assert(source.contains('"deviceInformationId"'));
   assert(source.contains('BluetoothLEAdvertisementType::ScanResponse'));
-  assert(source.contains('DeviceInformation::CreateWatcher'));
-  assert(source.contains(
-    'BluetoothLEDevice::GetDeviceSelectorFromPairingState(false)',
-  ));
+  assert(!source.contains('"deviceInformationName"'));
+  assert(!source.contains('"deviceInformationId"'));
+  assert(!source.contains('DeviceInformation::CreateWatcher'));
   assert(!source.contains('"nameResolution"'));
   assert(!source.contains('NameResolutionMap('));
 }
@@ -290,9 +288,6 @@ Future<void> testWindowsScannerMapsNativeAdvertisementEvents() async {
         'manufacturerData': [7, 8, 9],
         'rawAdvertisement': {
           'localName': 'Xiaomi Smart Band',
-          'deviceInformationName': 'Xiaomi Smart Band 9',
-          'deviceInformationId':
-              r'BluetoothLE#BluetoothLE00:11:22:33:44:55-aa:bb:cc:dd:ee:ff',
           'packetCount': 3,
           'scanResponseSeen': true,
           'manufacturerDataSections': [
@@ -329,8 +324,6 @@ Future<void> testWindowsScannerMapsNativeAdvertisementEvents() async {
   assert(event.seenAt == DateTime.fromMillisecondsSinceEpoch(1779943200000));
   assert(event.manufacturerData!.length == 3);
   assert(event.rawAdvertisement?['localName'] == 'Xiaomi Smart Band');
-  assert(event.rawAdvertisement?['deviceInformationName'] ==
-      'Xiaomi Smart Band 9');
   assert(event.rawAdvertisement?['packetCount'] == 3);
   assert(event.rawAdvertisement?['scanResponseSeen'] == true);
   assert(
@@ -607,7 +600,7 @@ class FakeWindowsBleScanBridge implements WindowsBleScanBridge {
   }
 
   @override
-  Future<void> startScan({BleScanMode mode = BleScanMode.passive}) async {
+  Future<void> startScan() async {
     started = true;
   }
 

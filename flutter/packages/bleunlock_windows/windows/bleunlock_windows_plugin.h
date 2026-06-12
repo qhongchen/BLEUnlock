@@ -39,13 +39,9 @@ class BleunlockWindowsPlugin : public flutter::Plugin {
         const flutter::MethodCall<flutter::EncodableValue> &method_call,
         std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
 
-    void StartScan(bool active);
+    void StartScan();
 
     void StopScan();
-
-    void StartDeviceWatcher();
-
-    void StopDeviceWatcher();
 
     void MergeAdvertisementSnapshot(
         const std::string &address,
@@ -62,19 +58,6 @@ class BleunlockWindowsPlugin : public flutter::Plugin {
         flutter::EncodableList manufacturer_sections,
         flutter::EncodableList data_sections,
         flutter::EncodableList service_uuids);
-
-    void MergeDeviceInformationSnapshot(
-        const std::string &device_information_id,
-        const std::string &device_information_name,
-        const std::string &address,
-        const std::string &address_hint,
-        const std::string &address_type,
-        bool has_is_paired,
-        bool is_paired,
-        bool has_is_present,
-        bool is_present,
-        bool has_is_connectable,
-        bool is_connectable);
 
     void FlushAggregatedScanEvents();
 

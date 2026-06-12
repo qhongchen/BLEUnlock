@@ -71,7 +71,6 @@ class MockBleScanner implements BleScanner {
   CapabilityStatus capability;
 
   bool isScanning = false;
-  BleScanMode lastScanMode = BleScanMode.passive;
   CapabilityStatus? refreshedCapability;
   int refreshCapabilityCount = 0;
   Object? refreshCapabilityError;
@@ -93,12 +92,11 @@ class MockBleScanner implements BleScanner {
   }
 
   @override
-  Future<void> startScan({BleScanMode mode = BleScanMode.passive}) async {
+  Future<void> startScan() async {
     final error = startScanError;
     if (error != null) {
       throw error;
     }
-    lastScanMode = mode;
     isScanning = true;
   }
 

@@ -107,7 +107,7 @@ void main() {
     await _disposeCoordinator(tester, coordinator);
   });
 
-  testWidgets('device tab refresh button updates throttled BLE list',
+  testWidgets('device tab auto refresh updates throttled BLE list',
       (tester) async {
     final platform = MockBleunlockPlatform(
       unlockCapability: const CapabilityStatus.unsupported(),
@@ -147,8 +147,9 @@ void main() {
     await tester.pump();
     expect(find.text('-80 dBm'), findsOneWidget);
     expect(find.text('-40 dBm'), findsNothing);
+    expect(find.text('刷新设备'), findsNothing);
 
-    await tester.tap(find.text('刷新设备'));
+    await tester.pump(const Duration(seconds: 5));
     await tester.pump();
     expect(find.text('-40 dBm'), findsOneWidget);
 
@@ -304,7 +305,6 @@ void main() {
             ],
             isMonitoring: false,
             onStartScanning: () {},
-            onRefreshDevices: () {},
             onStartMonitoring: () {},
             onPauseScanning: () {},
             onDeviceSelectionChanged: (_, __) {},
@@ -853,6 +853,12 @@ void main() {
     expect(find.text('复制诊断日志'), findsOneWidget);
     expect(find.text('导出诊断日志'), findsOneWidget);
     expect(find.text('导出验收包'), findsNothing);
+    expect(find.text('扫描'), findsWidgets);
+    expect(find.text('判定'), findsWidgets);
+    expect(find.text('动作'), findsWidgets);
+    expect(find.text('错误'), findsWidgets);
+    expect(find.text('2 条'), findsOneWidget);
+    expect(find.text('0 条'), findsWidgets);
     expect(find.text('扫描 band-1 -52 dBm'), findsOneWidget);
     expect(
       find.text(
@@ -2810,7 +2816,6 @@ Future<void> _pumpDeviceSectionInWidth(
               devices: devices,
               isMonitoring: true,
               onStartScanning: () {},
-              onRefreshDevices: () {},
               onStartMonitoring: () {},
               onPauseScanning: () {},
               onDeviceSelectionChanged: (_, __) {},

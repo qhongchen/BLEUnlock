@@ -91,12 +91,13 @@ class LockSyncConfig {
     );
   }
 
-  Map<String, Object?> toJson() {
+  Map<String, Object?> toJson({bool includeSharedSecret = true}) {
     return {
       'role': role.name,
       if (serverHost.trim().isNotEmpty) 'serverHost': serverHost.trim(),
       'port': port,
-      if (sharedSecret.trim().isNotEmpty) 'sharedSecret': sharedSecret.trim(),
+      if (includeSharedSecret && sharedSecret.trim().isNotEmpty)
+        'sharedSecret': sharedSecret.trim(),
       'syncProximityLocks': syncProximityLocks,
       'syncManualLocks': syncManualLocks,
     };

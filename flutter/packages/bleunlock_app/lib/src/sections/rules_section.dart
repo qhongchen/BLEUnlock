@@ -16,6 +16,17 @@ class RulesSection extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final unlockRssiMin = _clampInt(
+      config.lockRssi,
+      _unlockRssiMin,
+      _unlockRssiMax,
+    );
+    final lockRssiMax = _clampInt(
+      config.unlockRssi,
+      _lockRssiMin,
+      _lockRssiMax,
+    );
+
     return SectionCard(
       title: '规则',
       icon: Icons.tune,
@@ -28,25 +39,37 @@ class RulesSection extends StatelessWidget {
             runSpacing: 12,
             children: [
               _IntSliderRule(
-                label: '靠近阈值',
+                label: '靠近/唤醒阈值',
                 icon: Icons.sensors,
                 value: config.unlockRssi,
-                min: _unlockRssiMin,
+                min: unlockRssiMin,
                 max: _unlockRssiMax,
                 unit: 'dBm',
                 onChanged: (value) {
-                  onConfigChanged(config.copyWith(unlockRssi: value));
+                  onConfigChanged(
+                    config.copyWith(
+                      unlockRssi: value,
+                      lockRssi:
+                          config.lockRssi > value ? value : config.lockRssi,
+                    ),
+                  );
                 },
               ),
               _IntSliderRule(
-                label: '远离阈值',
+                label: '远离/锁屏阈值',
                 icon: Icons.sensors_off,
                 value: config.lockRssi,
                 min: _lockRssiMin,
-                max: _lockRssiMax,
+                max: lockRssiMax,
                 unit: 'dBm',
                 onChanged: (value) {
-                  onConfigChanged(config.copyWith(lockRssi: value));
+                  onConfigChanged(
+                    config.copyWith(
+                      unlockRssi:
+                          config.unlockRssi < value ? value : config.unlockRssi,
+                      lockRssi: value,
+                    ),
+                  );
                 },
               ),
               _IntSliderRule(
@@ -99,7 +122,7 @@ class RulesSection extends StatelessWidget {
                 },
               ),
               _SegmentedRule<UnlockDeviceLogic>(
-                label: '靠近逻辑',
+                label: '靠近/唤醒逻辑',
                 icon: Icons.compare_arrows,
                 selected: config.unlockDeviceLogic,
                 segments: const {
@@ -111,7 +134,7 @@ class RulesSection extends StatelessWidget {
                 },
               ),
               _SegmentedRule<LockDeviceLogic>(
-                label: '远离逻辑',
+                label: '远离/锁屏逻辑',
                 icon: Icons.call_split,
                 selected: config.lockDeviceLogic,
                 segments: const {
@@ -124,18 +147,6 @@ class RulesSection extends StatelessWidget {
               ),
             ],
           ),
-          if (onResetRulesAndDevices != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 12),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: OutlinedButton.icon(
-                  onPressed: onResetRulesAndDevices,
-                  icon: const Icon(Icons.restart_alt),
-                  label: const Text('重置规则和设备'),
-                ),
-              ),
-            ),
         ],
       ),
     );
@@ -146,6 +157,10 @@ const int _unlockRssiMin = -90;
 const int _unlockRssiMax = -30;
 const int _lockRssiMin = -110;
 const int _lockRssiMax = -40;
+
+int _clampInt(int value, int min, int max) {
+  return value.clamp(min, max).toInt();
+}
 
 class _RuleSurface extends StatelessWidget {
   const _RuleSurface({
@@ -218,7 +233,12 @@ class _IntSliderRule extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final labelText = unit.isEmpty ? '$value' : '$value $unit';
+    final effectiveMin = min <= max ? min : max;
+    final effectiveMax = min <= max ? max : min;
+    final effectiveValue = _clampInt(value, effectiveMin, effectiveMax);
+    final range = effectiveMax - effectiveMin;
+    final labelText =
+        unit.isEmpty ? '$effectiveValue' : '$effectiveValue $unit';
 
     return _RuleSurface(
       label: label,
@@ -228,14 +248,14 @@ class _IntSliderRule extends StatelessWidget {
         children: [
           Text(labelText, style: Theme.of(context).textTheme.titleMedium),
           Slider(
-            value: value.clamp(min, max).toDouble(),
-            min: min.toDouble(),
-            max: max.toDouble(),
-            divisions: divisions ?? (max - min),
+            value: effectiveValue.toDouble(),
+            min: effectiveMin.toDouble(),
+            max: effectiveMax.toDouble(),
+            divisions: range > 0 ? divisions ?? range : null,
             label: labelText,
             onChanged: (nextValue) {
               final rounded = nextValue.round();
-              if (rounded != value) {
+              if (rounded != effectiveValue) {
                 onChanged(rounded);
               }
             },
