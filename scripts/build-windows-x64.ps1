@@ -25,7 +25,13 @@ if (Test-Path $zipPath) {
     Remove-Item $zipPath -Force
 }
 
-Compress-Archive -Path (Join-Path $releaseDir "*") -DestinationPath $zipPath
+$previousProgressPreference = $ProgressPreference
+$ProgressPreference = "SilentlyContinue"
+try {
+    Compress-Archive -Path (Join-Path $releaseDir "*") -DestinationPath $zipPath
+} finally {
+    $ProgressPreference = $previousProgressPreference
+}
 $hash = Get-FileHash $zipPath -Algorithm SHA256
 
 Write-Host "Windows x64 release package:"
