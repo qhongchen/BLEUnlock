@@ -1317,6 +1317,7 @@ class AppCoordinator {
   Future<void> _handleSessionEvent(SessionEvent event) async {
     final label = _sessionEventLabel(event.kind);
     final reason = _sessionEventReason(event.kind);
+    final previousSessionState = _sessionState;
     _lastActionLabel = label;
 
     switch (event.kind) {
@@ -1341,6 +1342,12 @@ class AppCoordinator {
         _blockAutoUnlock('externalLock');
         _cancelWakeUnlockTimer();
         _cancelUnlockRetry(reason: 'sessionNotLockedForRetry');
+        if (previousSessionState != DashboardSessionState.unlocked) {
+          _broadcastUnlockSync(
+            reason: 'externalUnlock',
+            timestamp: event.timestamp,
+          );
+        }
       case SessionEventKind.displayWake:
         _sessionState = DashboardSessionState.displayWake;
       case SessionEventKind.systemWake:
