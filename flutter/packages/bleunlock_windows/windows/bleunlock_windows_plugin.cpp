@@ -1415,8 +1415,10 @@ BleunlockWindowsPlugin::UnlockWithCredentialProvider() {
         return UnlockResultMap(false, "credentialProviderUnavailable");
     }
     const auto kind = capability_map->find(flutter::EncodableValue("kind"));
-    if (kind == capability_map->end() ||
-        kind->second != flutter::EncodableValue("supported")) {
+    const auto *kind_value = kind == capability_map->end()
+                                 ? nullptr
+                                 : std::get_if<std::string>(&kind->second);
+    if (kind_value == nullptr || *kind_value != "supported") {
         return UnlockResultMap(false, "credentialProviderUnavailable");
     }
 
