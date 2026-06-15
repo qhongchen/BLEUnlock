@@ -6,10 +6,28 @@ set(PLUGIN_NAME "bleunlock_windows_plugin")
 
 get_filename_component(BLEUNLOCK_WINDOWS_PLUGIN_DIR
   "${CMAKE_CURRENT_LIST_DIR}" REALPATH)
-get_filename_component(BLEUNLOCK_REPO_ROOT
-  "${BLEUNLOCK_WINDOWS_PLUGIN_DIR}/../../../.." ABSOLUTE)
-set(BLEUNLOCK_AUTO_UNLOCK_SHARED_DIR
-  "${BLEUNLOCK_REPO_ROOT}/windows/auto_unlock/shared")
+set(BLEUNLOCK_REPO_ROOT_CANDIDATES
+  "${CMAKE_SOURCE_DIR}/../../../.."
+  "${BLEUNLOCK_WINDOWS_PLUGIN_DIR}/../../../.."
+)
+set(BLEUNLOCK_AUTO_UNLOCK_SHARED_DIR "")
+foreach(BLEUNLOCK_REPO_ROOT_CANDIDATE IN LISTS BLEUNLOCK_REPO_ROOT_CANDIDATES)
+  get_filename_component(BLEUNLOCK_REPO_ROOT
+    "${BLEUNLOCK_REPO_ROOT_CANDIDATE}" ABSOLUTE)
+  set(BLEUNLOCK_AUTO_UNLOCK_SHARED_DIR_CANDIDATE
+    "${BLEUNLOCK_REPO_ROOT}/windows/auto_unlock/shared")
+  if(EXISTS "${BLEUNLOCK_AUTO_UNLOCK_SHARED_DIR_CANDIDATE}/bleunlock_auto_unlock.cpp")
+    set(BLEUNLOCK_AUTO_UNLOCK_SHARED_DIR
+      "${BLEUNLOCK_AUTO_UNLOCK_SHARED_DIR_CANDIDATE}")
+    break()
+  endif()
+endforeach()
+if(NOT BLEUNLOCK_AUTO_UNLOCK_SHARED_DIR)
+  message(FATAL_ERROR
+    "BLEUnlock auto unlock shared source was not found. "
+    "Expected windows/auto_unlock/shared/bleunlock_auto_unlock.cpp "
+    "under the repository root.")
+endif()
 
 add_library(${PLUGIN_NAME} SHARED
   "bleunlock_windows_plugin_c_api.cpp"
