@@ -65,7 +65,7 @@ class BleunlockWindowsPlugin : public flutter::Plugin {
 
     flutter::EncodableValue GetUnlockCapability() const;
 
-    flutter::EncodableValue UnlockWithCredentialProvider() const;
+    flutter::EncodableValue UnlockWithCredentialProvider();
 
     void OpenUnlockSettings() const;
 

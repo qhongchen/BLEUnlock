@@ -7,6 +7,7 @@ set(PLUGIN_NAME "bleunlock_windows_plugin")
 add_library(${PLUGIN_NAME} SHARED
   "bleunlock_windows_plugin_c_api.cpp"
   "bleunlock_windows_plugin.cpp"
+  "../../../../windows/auto_unlock/shared/bleunlock_auto_unlock.cpp"
 )
 
 apply_standard_settings(${PLUGIN_NAME})
@@ -19,7 +20,10 @@ target_include_directories(${PLUGIN_NAME} INTERFACE
   "${CMAKE_CURRENT_SOURCE_DIR}"
   "${CMAKE_CURRENT_SOURCE_DIR}/include"
 )
-target_link_libraries(${PLUGIN_NAME} PRIVATE flutter flutter_wrapper_plugin runtimeobject windowsapp Advapi32 Shell32 User32 Wtsapi32)
+target_include_directories(${PLUGIN_NAME} PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../../../windows/auto_unlock/shared"
+)
+target_link_libraries(${PLUGIN_NAME} PRIVATE flutter flutter_wrapper_plugin runtimeobject windowsapp Advapi32 Crypt32 Shell32 User32 Wtsapi32)
 
 set(bleunlock_windows_bundled_libraries
   ""

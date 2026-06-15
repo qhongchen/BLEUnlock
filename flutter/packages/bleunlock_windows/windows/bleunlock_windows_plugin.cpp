@@ -1,5 +1,7 @@
 #include "bleunlock_windows_plugin.h"
 
+#include "bleunlock_auto_unlock.h"
+
 #include <flutter/event_channel.h>
 #include <flutter/event_sink.h>
 #include <flutter/event_stream_handler_functions.h>
@@ -656,6 +658,119 @@ flutter::EncodableValue UnlockResultMap(bool success, const char *reason) {
     return flutter::EncodableValue(value);
 }
 
+bool IsCredentialProviderRegistered() {
+    HKEY key = nullptr;
+    const auto status = RegOpenKeyExW(
+        HKEY_LOCAL_MACHINE,
+        bleunlock_auto_unlock::kCredentialProviderRegistryPath,
+        0,
+        KEY_READ,
+        &key);
+    if (status == ERROR_SUCCESS) {
+        RegCloseKey(key);
+        return true;
+    }
+    return false;
+}
+
+bool QueryCredentialServiceRunning(bool *installed, DWORD *error_code) {
+    if (installed != nullptr) {
+        *installed = false;
+    }
+    if (error_code != nullptr) {
+        *error_code = ERROR_SUCCESS;
+    }
+
+    SC_HANDLE manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+    if (manager == nullptr) {
+        if (error_code != nullptr) {
+            *error_code = GetLastError();
+        }
+        return false;
+    }
+    SC_HANDLE service = OpenServiceW(
+        manager,
+        bleunlock_auto_unlock::kServiceName,
+        SERVICE_QUERY_STATUS);
+    if (service == nullptr) {
+        if (error_code != nullptr) {
+            *error_code = GetLastError();
+        }
+        CloseServiceHandle(manager);
+        return false;
+    }
+    if (installed != nullptr) {
+        *installed = true;
+    }
+
+    SERVICE_STATUS_PROCESS status = {};
+    DWORD bytes_needed = 0;
+    const bool queried = QueryServiceStatusEx(
+        service,
+        SC_STATUS_PROCESS_INFO,
+        reinterpret_cast<LPBYTE>(&status),
+        sizeof(status),
+        &bytes_needed);
+    CloseServiceHandle(service);
+    CloseServiceHandle(manager);
+    if (!queried) {
+        if (error_code != nullptr) {
+            *error_code = GetLastError();
+        }
+        return false;
+    }
+    return status.dwCurrentState == SERVICE_RUNNING;
+}
+
+flutter::EncodableValue AutoUnlockCapabilityFromService() {
+    if (!IsCredentialProviderRegistered()) {
+        return CapabilityMap(
+            "temporarilyUnavailable",
+            "Credential Provider component is not installed");
+    }
+
+    bool service_installed = false;
+    DWORD service_error = ERROR_SUCCESS;
+    const bool service_running =
+        QueryCredentialServiceRunning(&service_installed, &service_error);
+    if (!service_installed) {
+        return CapabilityMap(
+            "temporarilyUnavailable",
+            "Credential Provider service is not installed");
+    }
+    if (!service_running) {
+        return CapabilityMap(
+            "temporarilyUnavailable",
+            "Credential Provider service is not running");
+    }
+
+    const auto response = bleunlock_auto_unlock::SendPipeRequest(
+        bleunlock_auto_unlock::BuildRequest({{"command", "status"}}));
+    if (!response.transport_ok) {
+        return CapabilityMap(
+            "temporarilyUnavailable",
+            "Credential Provider service is unavailable");
+    }
+    if (!response.ok) {
+        return CapabilityMap(
+            "failedWithReason",
+            "Credential Provider service status failed");
+    }
+    if (response.values.find("credentialReadable") != response.values.end() &&
+        response.values.at("credentialReadable") != "1") {
+        return CapabilityMap(
+            "failedWithReason",
+            "Windows auto unlock credential cannot be read");
+    }
+    if (response.values.find("configured") == response.values.end() ||
+        response.values.at("configured") != "1") {
+        return CapabilityMap(
+            "missingSecret",
+            "Windows auto unlock credential is not configured");
+    }
+    return CapabilityMap("supported");
+}
+
 LRESULT CALLBACK PluginWindowProc(HWND hwnd,
                                   UINT message,
                                   WPARAM wparam,
@@ -1289,14 +1404,34 @@ flutter::EncodableValue BleunlockWindowsPlugin::GetScannerCapability() {
 }
 
 flutter::EncodableValue BleunlockWindowsPlugin::GetUnlockCapability() const {
-    return CapabilityMap(
-        "temporarilyUnavailable",
-        "Credential Provider component is not installed");
+    return AutoUnlockCapabilityFromService();
 }
 
 flutter::EncodableValue
-BleunlockWindowsPlugin::UnlockWithCredentialProvider() const {
-    return UnlockResultMap(false, "credentialProviderMissing");
+BleunlockWindowsPlugin::UnlockWithCredentialProvider() {
+    const auto capability = AutoUnlockCapabilityFromService();
+    const auto *capability_map = std::get_if<flutter::EncodableMap>(&capability);
+    if (capability_map == nullptr) {
+        return UnlockResultMap(false, "credentialProviderUnavailable");
+    }
+    const auto kind = capability_map->find(flutter::EncodableValue("kind"));
+    if (kind == capability_map->end() ||
+        kind->second != flutter::EncodableValue("supported")) {
+        return UnlockResultMap(false, "credentialProviderUnavailable");
+    }
+
+    const auto response = bleunlock_auto_unlock::SendPipeRequest(
+        bleunlock_auto_unlock::BuildRequest({
+            {"command", "grantUnlock"},
+            {"reason",
+             bleunlock_auto_unlock::Base64EncodeUtf8("proximityUnlock")},
+            {"ttlSeconds", "30"},
+        }));
+    if (!response.transport_ok || !response.ok) {
+        return UnlockResultMap(false, "credentialProviderGrantFailed");
+    }
+    WakeDisplay();
+    return UnlockResultMap(false, "credentialProviderGrantIssued");
 }
 
 void BleunlockWindowsPlugin::OpenUnlockSettings() const {

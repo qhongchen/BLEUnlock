@@ -1254,6 +1254,20 @@ class AppCoordinator {
           timestamp: event.timestamp,
         );
         return;
+      case LockSyncControllerEventKind.remoteUnlockRequested:
+        _lastActionLabel = event.message;
+        _appendLog(
+          timestamp: event.timestamp,
+          category: DashboardLogCategory.action,
+          message: event.message,
+          reason: event.reason,
+          logPlatform: 'lockSync',
+        );
+        await _unlockFromRemoteSync(
+          reason: event.reason ?? 'remoteUnlock',
+          timestamp: event.timestamp,
+        );
+        return;
     }
   }
 
@@ -1582,6 +1596,89 @@ class AppCoordinator {
     _publish();
   }
 
+  Future<void> _unlockFromRemoteSync({
+    required String reason,
+    required DateTime timestamp,
+  }) async {
+    _ensureSessionSubscription();
+    if (!platform.unlock.capability.isUsable) {
+      _lastActionLabel = 'Unlock unsupported';
+      _appendLog(
+        timestamp: timestamp,
+        category: DashboardLogCategory.error,
+        message: _capabilityFailureMessage(
+          _lastActionLabel,
+          platform.unlock.capability,
+        ),
+        reason: 'lockSyncUnlockUnsupported',
+        logPlatform: 'lockSync',
+      );
+      _publish();
+      return;
+    }
+
+    bool isLocked;
+    try {
+      isLocked = await platform.session.isLocked();
+    } catch (error) {
+      _appendPlatformFailureLog(
+        timestamp: timestamp,
+        label: 'Session lock state unavailable',
+        reason: 'lockSyncUnlockStateFailed',
+        error: error,
+      );
+      _publish();
+      return;
+    }
+    if (!isLocked) {
+      _sessionState = DashboardSessionState.unlocked;
+      _lastActionLabel = 'Unlock skipped';
+      _appendLog(
+        timestamp: timestamp,
+        category: DashboardLogCategory.action,
+        message: _lastActionLabel,
+        reason: 'lockSyncAlreadyUnlocked',
+        logPlatform: 'lockSync',
+      );
+      _publish();
+      return;
+    }
+
+    try {
+      final result = await platform.unlock.unlock();
+      final isPending = _isPendingUnlockResult(result);
+      _lastActionLabel = result.success
+          ? 'Unlocked session'
+          : isPending
+              ? 'Unlock pending'
+              : 'Unlock failed';
+      _appendLog(
+        timestamp: timestamp,
+        category: result.success || isPending
+            ? DashboardLogCategory.action
+            : DashboardLogCategory.error,
+        message: _lastActionLabel,
+        reason: 'lockSyncRemoteUnlock:$reason:${result.reason}',
+        logPlatform: 'lockSync',
+      );
+      if (result.success) {
+        _sessionState = DashboardSessionState.unlocked;
+        _hasWokenForCurrentCloseCycle = false;
+        _blockAutoUnlock('externalLock');
+        _broadcastUnlockSync(reason: result.reason, timestamp: timestamp);
+      }
+    } catch (error) {
+      _appendLog(
+        timestamp: timestamp,
+        category: DashboardLogCategory.error,
+        message: 'Unlock failed: $error',
+        reason: 'lockSyncUnlockFailed',
+        logPlatform: 'lockSync',
+      );
+    }
+    _publish();
+  }
+
   Future<void> _lockFromDecision(DateTime timestamp) async {
     if (await _isCurrentlyLocked(timestamp)) {
       if (!_hasLoggedAlreadyLockedSkip) {
@@ -1662,6 +1759,22 @@ class AppCoordinator {
     }
     unawaited(
       _lockSyncController.broadcastLock(
+        reason: reason,
+        timestamp: timestamp,
+      ),
+    );
+  }
+
+  void _broadcastUnlockSync({
+    required String reason,
+    required DateTime timestamp,
+  }) {
+    final config = _lockSyncSnapshot.config;
+    if (config.role != LockSyncRole.server) {
+      return;
+    }
+    unawaited(
+      _lockSyncController.broadcastUnlock(
         reason: reason,
         timestamp: timestamp,
       ),
@@ -1907,10 +2020,15 @@ class AppCoordinator {
         _hasWokenForCurrentCloseCycle = false;
         _blockAutoUnlock('externalLock');
       }
-      _lastActionLabel = result.success ? 'Unlocked session' : 'Unlock failed';
+      final isPending = _isPendingUnlockResult(result);
+      _lastActionLabel = result.success
+          ? 'Unlocked session'
+          : isPending
+              ? 'Unlock pending'
+              : 'Unlock failed';
       _appendLog(
         timestamp: timestamp,
-        category: result.success
+        category: result.success || isPending
             ? DashboardLogCategory.action
             : DashboardLogCategory.error,
         message: _lastActionLabel,
@@ -1940,7 +2058,9 @@ class AppCoordinator {
       return;
     }
 
-    if (!result.success && result.reason != 'stillLocked') {
+    if (!result.success &&
+        result.reason != 'stillLocked' &&
+        !_isPendingUnlockResult(result)) {
       _blockAutoUnlock('unlockFailed');
       _publish();
       return;
@@ -1985,6 +2105,10 @@ class AppCoordinator {
     _unlockRetryTimer = Timer(_unlockRetryDelay, () {
       unawaited(_runUnlockRetry(attempt + 1));
     });
+  }
+
+  bool _isPendingUnlockResult(UnlockResult result) {
+    return result.reason == 'credentialProviderGrantIssued';
   }
 
   Future<void> _runUnlockRetry(int attempt) async {

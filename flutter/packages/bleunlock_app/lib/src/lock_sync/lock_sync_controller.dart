@@ -18,6 +18,7 @@ enum LockSyncControllerEventKind {
   action,
   error,
   remoteLockRequested,
+  remoteUnlockRequested,
 }
 
 class LockSyncControllerEvent {
@@ -97,6 +98,29 @@ class LockSyncController {
     required String reason,
     required DateTime timestamp,
   }) async {
+    await _broadcastRequest(
+      type: 'lockRequested',
+      reason: reason,
+      timestamp: timestamp,
+    );
+  }
+
+  Future<void> broadcastUnlock({
+    required String reason,
+    required DateTime timestamp,
+  }) async {
+    await _broadcastRequest(
+      type: 'unlockRequested',
+      reason: reason,
+      timestamp: timestamp,
+    );
+  }
+
+  Future<void> _broadcastRequest({
+    required String type,
+    required String reason,
+    required DateTime timestamp,
+  }) async {
     if (_isDisposed ||
         _config.role != LockSyncRole.server ||
         _serverClients.isEmpty) {
@@ -104,7 +128,7 @@ class LockSyncController {
     }
 
     final message = _signedMessage(
-      type: 'lockRequested',
+      type: type,
       reason: reason,
       target: 'all',
       issuedAt: timestamp,
@@ -123,7 +147,7 @@ class LockSyncController {
     _updateSnapshot(
       _snapshot.copyWith(
         connectedClientCount: _serverClients.length,
-        lastEventLabel: 'lockRequested:$reason',
+        lastEventLabel: '$type:$reason',
         clearLastError: true,
       ),
       emitStatus: true,
@@ -361,10 +385,10 @@ class LockSyncController {
           );
           return;
         }
-        if (type == 'lockRequested') {
+        if (type == 'lockRequested' || type == 'unlockRequested') {
           final validation = _validateMessage(
             payload,
-            expectedType: 'lockRequested',
+            expectedType: type is String ? type : '',
             rememberEvent: true,
           );
           if (!validation.isValid) {
@@ -378,14 +402,18 @@ class LockSyncController {
           final reason = _stringValue(payload['reason']) ?? 'remoteLock';
           _updateSnapshot(
             _snapshot.copyWith(
-              lastEventLabel: 'lockRequested:$reason',
+              lastEventLabel: '$type:$reason',
               clearLastError: true,
             ),
             emitStatus: true,
           );
           _emit(
-            LockSyncControllerEventKind.remoteLockRequested,
-            'Remote lock requested',
+            type == 'unlockRequested'
+                ? LockSyncControllerEventKind.remoteUnlockRequested
+                : LockSyncControllerEventKind.remoteLockRequested,
+            type == 'unlockRequested'
+                ? 'Remote unlock requested'
+                : 'Remote lock requested',
             reason: reason,
           );
         }

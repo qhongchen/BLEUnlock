@@ -217,6 +217,18 @@ const Map<String, String> _exactLabels = {
   'permission denied': '权限被拒绝',
   'temporarily unavailable': '暂时不可用',
   'Credential Provider component is not installed': 'Credential Provider 组件未安装',
+  'Credential Provider service is not installed':
+      'Credential Provider 服务未安装',
+  'Credential Provider service is not running':
+      'Credential Provider 服务未运行',
+  'Credential Provider service is unavailable':
+      'Credential Provider 服务不可用',
+  'Credential Provider service status failed':
+      'Credential Provider 服务状态异常',
+  'Windows auto unlock credential is not configured':
+      'Windows 自动解锁凭据未配置',
+  'Windows auto unlock credential cannot be read':
+      'Windows 自动解锁凭据无法读取',
   'powered off': '蓝牙已关闭',
   'missing secret': '缺少密码',
   'stillLocked': '仍处于锁定状态',
@@ -225,6 +237,10 @@ const Map<String, String> _exactLabels = {
   'externalLock': '外部锁屏',
   'remoteLock': '远程锁屏',
   'unlockFailed': '解锁失败',
+  'credentialProviderUnavailable': 'Credential Provider 不可用',
+  'credentialProviderGrantFailed': 'Credential Provider 授权失败',
+  'credentialProviderGrantIssued': 'Credential Provider 授权已发出',
+  'Unlock pending': '等待 Windows 登录认证',
   'autoUnlockSuppressedForRetry': '自动解锁已暂停',
   'failed': '失败',
   'unknown': '未知',
